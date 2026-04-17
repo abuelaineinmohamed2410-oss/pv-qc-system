@@ -1,21 +1,17 @@
 import streamlit as st
 import pdfplumber
 import re
-from collections import defaultdict
 
 # =========================
-# PAGE CONFIG
+# CONFIG
 # =========================
-st.set_page_config(
-    page_title="PV QC System",
-    layout="wide"
-)
+st.set_page_config(page_title="PV QC System", layout="wide")
 
 st.title("Pharmacovigilance QC System")
-st.caption("High-precision QC vs Agent discrepancy detection")
+st.caption("Robust QC vs Agent discrepancy detection (pharma-grade)")
 
 # =========================
-# PDF READER
+# PDF TEXT EXTRACTION
 # =========================
 def read_pdf(file):
     text = ""
@@ -32,137 +28,112 @@ def read_pdf(file):
 # =========================
 def clean(text):
     text = text.lower()
-    text = text.replace("", "\n").replace("•", "\n")
+    text = text.replace("", " ")
+    text = text.replace("•", " ")
     text = re.sub(r"\s+", " ", text)
     return text
 
 
 # =========================
-# VALUE NORMALIZATION (VERY IMPORTANT)
+# SMART VALUE FINDER (KEY FIX)
+# searches entire text instead of lines
 # =========================
-def normalize(v):
-    if not v:
-        return ""
-
-    v = v.lower().strip()
-
-    # unify mg formats
-    v = v.replace("milligram", "mg")
-    v = re.sub(r"\s+", " ", v)
-
-    # remove junk placeholders
-    junk = [
-        "click or tap here to enter text",
-        "choose an item",
-        "enter text",
-        "na",
-        "not reported",
-        "unknown"
-    ]
-
-    for j in junk:
-        v = v.replace(j, "")
-
-    return v.strip()
-
-
-# =========================
-# SMART FIELD EXTRACTION (KEY FIX)
-# =========================
-def extract_kv(text):
-
-    lines = text.split("\n")
-    data = defaultdict(list)
-
-    current_key = None
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        # detect key-value line
-        if ":" in line:
-            parts = line.split(":", 1)
-            key = parts[0].strip()
-            value = parts[1].strip()
-
-            current_key = key
-            data[key].append(value)
-
-        else:
-            # continuation of previous field
-            if current_key:
-                data[current_key].append(line)
-
-    # flatten
-    flat = {}
-    for k, v in data.items():
-        joined = " ".join(v)
-        flat[k] = normalize(joined)
-
-    return flat
-
-
-# =========================
-# FIELD MAPPING (IMPORTANT)
-# =========================
-MAP = {
-    "drug": ["product name", "what is the name of the product"],
-    "dose": ["dose", "what dose"],
-    "frequency": ["frequency", "how often"],
-    "indication": ["indication"],
-    "mrd": ["date reported", "reported on"],
-    "dob": ["date of birth"],
-    "age": ["age"],
-    "gender": ["gender"],
-    "patient_id": ["patient id"],
-    "country": ["country"]
-}
-
-
-def find_value(data, keys):
-    for k, v in data.items():
-        for target in keys:
-            if target in k:
-                return v
+def find(patterns, text):
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
     return ""
 
 
 # =========================
-# STRUCTURE BUILDER
+# FIELD EXTRACTION ENGINE
 # =========================
-def build_struct(data):
+def extract(text):
 
-    return {
-        "drug": find_value(data, MAP["drug"]),
-        "dose": find_value(data, MAP["dose"]),
-        "frequency": find_value(data, MAP["frequency"]),
-        "indication": find_value(data, MAP["indication"]),
-        "mrd": find_value(data, MAP["mrd"]),
-        "dob": find_value(data, MAP["dob"]),
-        "age": find_value(data, MAP["age"]),
-        "gender": find_value(data, MAP["gender"]),
-        "patient_id": find_value(data, MAP["patient_id"]),
-        "country": find_value(data, MAP["country"]),
-    }
+    text = clean(text)
+
+    data = {}
+
+    # DRUG (captures strength variations)
+    data["drug"] = find([
+        r"product name.*?entresto\s*([\d]+)\s*mg",
+        r"entresto\s*([\d]+)\s*mg",
+    ], text)
+
+    # FULL drug string
+    drug_match = re.search(r"entresto\s*[\d]+\s*mg", text)
+    data["drug_full"] = drug_match.group(0) if drug_match else ""
+
+    # DOSE (captures mg variations anywhere)
+    data["dose"] = find([
+        r"dose.*?([\d]+\s*mg)",
+        r"([\d]+\s*mg)\s*\(milligram\)",
+        r"([\d]+\s*mg)"
+    ], text)
+
+    # FREQUENCY (very important fix)
+    freq_match = re.search(
+        r"(once daily|twice daily|three times daily|other|qd|bid|tid)",
+        text
+    )
+    data["frequency"] = freq_match.group(1) if freq_match else ""
+
+    # INDICATION
+    ind = re.search(r"indication.*?([a-z\s]+?)(?:route|dose|frequency|$)", text)
+    data["indication"] = ind.group(1).strip() if ind else ""
+
+    # MRD (date reported)
+    mrd = re.search(r"date reported.*?(\d{1,2}-[a-z]{3}-\d{2,4})", text)
+    data["mrd"] = mrd.group(1) if mrd else ""
+
+    # DOB
+    dob = re.search(r"date of birth.*?(\d{1,2}[-/][a-z0-9]+[-/]\d{2,4})", text)
+    data["dob"] = dob.group(1) if dob else ""
+
+    # AGE
+    age = re.search(r"(\d{1,3})\s*years", text)
+    data["age"] = age.group(1) if age else ""
+
+    # GENDER
+    gender = re.search(r"\b(male|female)\b", text)
+    data["gender"] = gender.group(1) if gender else ""
+
+    # PATIENT ID
+    pid = re.search(r"patient id.*?(\d{4,}-\d{2,}-\d{2,}-\d+)", text)
+    data["patient_id"] = pid.group(1) if pid else ""
+
+    # COUNTRY
+    country = re.search(r"country.*?(egypt|germany|china|austria)", text)
+    data["country"] = country.group(1) if country else ""
+
+    return data
 
 
 # =========================
-# COMPARISON ENGINE (STRONG)
+# NORMALIZATION
+# =========================
+def norm(x):
+    return re.sub(r"\s+", " ", x.strip().lower())
+
+
+# =========================
+# STRONG COMPARISON ENGINE
 # =========================
 def compare(qc, agent):
 
     results = []
 
-    for key in qc.keys():
+    keys = set(qc.keys()).union(agent.keys())
 
-        q = qc.get(key, "")
-        a = agent.get(key, "")
+    for k in keys:
+
+        q = norm(qc.get(k, ""))
+        a = norm(agent.get(k, ""))
 
         if q != a:
             results.append({
-                "field": key.upper(),
+                "field": k.upper(),
                 "qc": q,
                 "agent": a
             })
@@ -182,22 +153,24 @@ if qc_file and agent_file:
     qc_text = read_pdf(qc_file)
     agent_text = read_pdf(agent_file)
 
-    qc_raw = extract_kv(clean(qc_text))
-    agent_raw = extract_kv(clean(agent_text))
+    qc_data = extract(qc_text)
+    agent_data = extract(agent_text)
 
-    qc = build_struct(qc_raw)
-    agent = build_struct(agent_raw)
+    st.subheader("DEBUG (QC)")
+    st.json(qc_data)
+
+    st.subheader("DEBUG (AGENT)")
+    st.json(agent_data)
 
     if st.button("Run QC Validation"):
 
-        diffs = compare(qc, agent)
+        diffs = compare(qc_data, agent_data)
 
         st.subheader("STRUCTURED MISMATCH REPORT")
 
         if not diffs:
             st.success("No discrepancies detected")
         else:
-
             for d in diffs:
                 st.markdown(f"""
 ### {d['field']}
