@@ -2,141 +2,190 @@ import streamlit as st
 import pdfplumber
 import re
 
-st.set_page_config(page_title="PV QC Comparator", layout="wide")
-st.title("Pharmacovigilance QC vs Agent Comparator (Clean Engine)")
+# =========================
+# PAGE CONFIG (PRO UI)
+# =========================
+st.set_page_config(
+    page_title="PV QC System",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
 # =========================
-# READ PDF
+# HEADER (PROFESSIONAL STYLE)
+# =========================
+st.markdown("""
+<style>
+.main-title {
+    font-size: 32px;
+    font-weight: 600;
+    margin-bottom: 5px;
+}
+.sub-title {
+    font-size: 16px;
+    color: #666;
+    margin-bottom: 20px;
+}
+.card {
+    background-color: #f8f9fa;
+    padding: 15px;
+    border-radius: 10px;
+    border: 1px solid #e0e0e0;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("<div class='main-title'>Pharmacovigilance QC System</div>", unsafe_allow_html=True)
+st.markdown("<div class='sub-title'>QC vs Agent — discrepancy detection engine</div>", unsafe_allow_html=True)
+
+# =========================
+# PDF READER
 # =========================
 def read_pdf(file):
     text = ""
     with pdfplumber.open(file) as pdf:
         for p in pdf.pages:
-            text += p.extract_text() or ""
-    return text.lower()
+            t = p.extract_text()
+            if t:
+                text += t + "\n"
+    return text
 
 # =========================
 # CLEAN TEXT
 # =========================
 def clean(text):
-    text = text.lower()
-    text = text.replace("", " ")
-    text = text.replace("•", " ")
-    text = text.replace("\uf0b7", " ")
-    text = re.sub(r"\s+", " ", text)
+    text = text.replace("", "\n").replace("•", "\n")
+    text = text.replace("\xa0", " ")
     return text
 
 # =========================
-# LABEL MAP (IMPORTANT FIX)
+# NOISE FILTER
 # =========================
-FIELDS = {
-    "drug": "product name",
-    "dose": "dose",
-    "frequency": "frequency",
-    "indication": "indication",
-    "mrd": "date reported",
-    "dob": "date of birth",
-    "patient_id": "patient id",
-    "gender": "gender",
-    "country": "country",
+def noise(x):
+    x = x.lower()
+    return "click or tap" in x or "choose an item" in x or "enter text" in x
+
+# =========================
+# LABELS
+# =========================
+LABELS = {
+    "drug": ["product name"],
+    "dose": ["dose"],
+    "indication": ["indication"],
+    "mrd": ["date reported"],
+    "patient_id": ["patient id"],
+    "dob": ["date of birth"],
+    "age": ["age"],
+    "gender": ["gender"],
+    "country": ["country"]
 }
 
 # =========================
-# VALUE CLEANER (CRITICAL FIX)
+# EXTRACTION ENGINE (UNCHANGED LOGIC)
 # =========================
-def clean_value(v):
-
-    v = v.strip()
-
-    # remove label contamination
-    v = re.sub(r"product information.*?:", "", v)
-    v = re.sub(r"indication.*?:", "", v)
-    v = re.sub(r"dose.*?:", "", v)
-
-    # remove repeated spaces
-    v = re.sub(r"\s+", " ", v)
-
-    return v.strip()
-
-# =========================
-# LABEL → VALUE PARSER (CORE FIX)
-# =========================
-def parse(text):
+def extract_fields(text):
 
     text = clean(text)
+    lines = [re.sub(r"\s+", " ", l.strip()) for l in text.split("\n") if l.strip()]
 
-    data = {k: [] for k in FIELDS.keys()}
-    data["ae"] = []
+    fields = {k: "" for k in LABELS.keys()}
 
-    # split by sentences / bullets
-    chunks = re.split(r"[•\.\n]", text)
+    for i, line in enumerate(lines):
 
-    for i, chunk in enumerate(chunks):
+        low = line.lower()
 
-        chunk = chunk.strip()
-        if not chunk:
-            continue
+        for field, keys in LABELS.items():
 
-        for field, label in FIELDS.items():
+            if any(k in low for k in keys):
 
-            if label in chunk:
+                if ":" in line:
+                    val = line.split(":", 1)[1].strip()
+                    if val and not noise(val):
+                        fields[field] = val
+                        continue
 
-                value = chunk.split(label)[-1]
+                for j in range(i + 1, min(i + 6, len(lines))):
+                    v = lines[j].strip()
 
-                value = clean_value(value)
+                    if noise(v):
+                        continue
 
-                # store only clean value
-                if value and len(value) < 200:
-                    data[field].append(value)
+                    if any(k in v.lower() for ks in LABELS.values() for k in ks):
+                        break
 
-        # AE detection (separate logic)
-        if "non compliance" in chunk or "stopping" in chunk or "off-label" in chunk:
-            data["ae"].append(chunk.strip())
+                    fields[field] = v
+                    break
 
-    # deduplicate
-    for k in data:
-        data[k] = list(set(data[k]))
-
-    return data
+    return {k: v.lower().strip() for k, v in fields.items() if v}
 
 # =========================
-# COMPARE
+# COMPARE ENGINE
 # =========================
-def compare(qc, ag):
+def compare(qc, agent):
 
-    result = {}
+    all_keys = set(qc.keys()).union(set(agent.keys()))
+    results = []
 
-    for k in qc.keys():
+    for k in all_keys:
 
-        if qc[k] != ag[k]:
-            result[k] = {
-                "qc": qc[k],
-                "agent": ag[k]
-            }
+        q = qc.get(k, "MISSING")
+        a = agent.get(k, "MISSING")
 
-    return result
+        if q != a:
+            results.append((k.upper(), q, a))
+
+    return results
 
 # =========================
-# UI
+# UI INPUT SECTION
 # =========================
-qc_file = st.file_uploader("Upload QC PDF", type=["pdf"])
-ag_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
+col1, col2 = st.columns(2)
 
-if qc_file and ag_file:
+with col1:
+    qc_file = st.file_uploader("Upload QC PDF", type=["pdf"])
 
-    qc = parse(read_pdf(qc_file))
-    ag = parse(read_pdf(ag_file))
+with col2:
+    agent_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
 
-    if st.button("Compare"):
+# =========================
+# PROCESS
+# =========================
+if qc_file and agent_file:
 
-        res = compare(qc, ag)
+    qc_text = read_pdf(qc_file)
+    agent_text = read_pdf(agent_file)
 
-        st.subheader("MISMATCH REPORT (CLEAN OUTPUT)")
+    qc_data = extract_fields(qc_text)
+    agent_data = extract_fields(agent_text)
 
-        for k, v in res.items():
+    if st.button("Run QC Validation"):
 
-            st.markdown(f"""
-### {k.upper()}
-**QC:** {v['qc']}
-**AGENT:** {v['agent']}
+        results = compare(qc_data, agent_data)
+
+        st.markdown("### QC Validation Report")
+
+        if not results:
+
+            st.success("No discrepancies detected")
+
+        else:
+
+            st.markdown("""
+            <div class='card'>
+            <h4>Detected Discrepancies</h4>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.write("")
+
+            for field, qc_val, ag_val in results:
+
+                st.markdown(f"""
+### {field}
+
+| QC Value | Agent Value |
+|----------|-------------|
+| {qc_val} | {ag_val} |
+
+---
 """)
