@@ -2,8 +2,8 @@ import streamlit as st
 import pdfplumber
 import re
 
-st.set_page_config(page_title="PV QC Smart Engine", layout="wide")
-st.title("Pharmacovigilance QC Smart Comparator")
+st.set_page_config(page_title="PV QC Engine", layout="wide")
+st.title("Pharmacovigilance Smart Reconciliation Engine")
 
 # =========================
 # READ PDF
@@ -12,9 +12,8 @@ def read_pdf(file):
     text = ""
     with pdfplumber.open(file) as pdf:
         for p in pdf.pages:
-            t = p.extract_text()
-            if t:
-                text += t + "\n"
+            if p.extract_text():
+                text += p.extract_text() + "\n"
     return text.lower()
 
 # =========================
@@ -22,40 +21,48 @@ def read_pdf(file):
 # =========================
 def clean(text):
     text = text.lower()
-    text = text.replace("·", " ")
     text = re.sub(r"\s+", " ", text)
     return text
 
 # =========================
-# IGNORE NOISE (CRITICAL FIX)
+# EXTRACT CONTEXT WINDOWS (KEY FIX)
 # =========================
-def remove_noise(text):
+def get_context(text, keywords, window=200):
 
-    noise_patterns = [
-        "other dosage",
-        "describe the frequency",
-        "additional dosage",
-        "click or tap here to enter text",
-        "choose an item"
-    ]
+    hits = []
 
-    for n in noise_patterns:
-        text = text.replace(n, " ")
+    for k in keywords:
+        for m in re.finditer(k, text):
+            start = max(0, m.start() - window)
+            end = min(len(text), m.end() + window)
+            hits.append(text[start:end])
 
-    return text
+    return hits
 
 # =========================
-# SMART FIELD EXTRACTION
+# SMART VALUE EXTRACTOR
+# =========================
+def extract_values(contexts, pattern):
+
+    values = []
+
+    for c in contexts:
+        values += re.findall(pattern, c)
+
+    return list(set(values))
+
+# =========================
+# MAIN EXTRACTOR (ROBUST)
 # =========================
 def extract(text):
 
-    text = remove_noise(clean(text))
+    text = clean(text)
 
     data = {
-        "drug": [],
-        "dose": [],
-        "frequency": [],
-        "ae": [],
+        "drug": set(),
+        "dose": set(),
+        "frequency": set(),
+        "ae": set(),
         "mrd": "",
         "dob": "",
         "patient_id": "",
@@ -65,71 +72,59 @@ def extract(text):
     }
 
     # ================= DRUG =================
-    data["drug"] = list(set(re.findall(r"entresto\s*\d+\s*mg", text)))
+    drug_ctx = get_context(text, ["entresto", "product name"])
+    data["drug"] = set(extract_values(drug_ctx, r"entresto\s*\d+\s*mg"))
 
     # ================= DOSE =================
-    data["dose"] = list(set(re.findall(r"\d+\s*mg", text)))
+    data["dose"] = set(re.findall(r"\d+\s*mg", text))
 
     # ================= FREQUENCY =================
-    freq = []
-    if "once daily" in text or "once a day" in text:
-        freq.append("once daily")
-    if "twice daily" in text or "twice a day" in text:
-        freq.append("twice daily")
-    data["frequency"] = list(set(freq))
+    freq_ctx = get_context(text, ["frequency", "once", "twice"])
+    if any("once" in c for c in freq_ctx):
+        data["frequency"].add("once daily")
+    if any("twice" in c for c in freq_ctx):
+        data["frequency"].add("twice daily")
 
     # ================= AE =================
+    ae_ctx = get_context(text, ["adverse", "event", "stopping", "non"])
     ae_map = {
         "non compliance": ["non compliance", "non-complaint"],
-        "stopping": ["stop", "stopped", "stopping"],
+        "stopping": ["stop", "stopped"],
         "off-label": ["off-label", "off label"]
     }
 
-    for key, variants in ae_map.items():
-        if any(v in text for v in variants):
-            data["ae"].append(key)
+    for k, v in ae_map.items():
+        if any(any(x in c for x in v) for c in ae_ctx):
+            data["ae"].add(k)
 
-    data["ae"] = list(set(data["ae"]))
+    # ================= MRD (CRITICAL FIX) =================
+    date_ctx = get_context(text, ["reported", "date", "mrd"])
 
-    # ================= MRD (IMPORTANT FIX) =================
-    mrd_patterns = [
-        r"date reported\s*[:\-]?\s*(\d{1,2}-[a-z]{3}-\d{2,4})",
-        r"reported on\s*(\d{1,2}-[a-z]{3}-\d{2,4})",
-        r"mrd\s*[:\-]?\s*(\d{1,2}-[a-z]{3}-\d{2,4})"
-    ]
+    date_match = re.findall(r"\d{1,2}-[a-z]{3}-\d{2,4}", " ".join(date_ctx))
+    if date_match:
+        data["mrd"] = date_match[0]
 
-    for p in mrd_patterns:
-        m = re.search(p, text)
-        if m:
-            data["mrd"] = m.group(1)
-            break
+    # ================= DOB =================
+    dob_ctx = get_context(text, ["birth", "born", "dob"])
 
-    # ================= DOB (IMPORTANT FIX) =================
-    dob_patterns = [
-        r"date of birth\s*[:\-]?\s*(\d{1,2}-[a-z]{3}-\d{2,4})",
-        r"born\s*[:\-]?\s*(\d{1,2}-[a-z]{3}-\d{2,4})"
-    ]
-
-    for p in dob_patterns:
-        m = re.search(p, text)
-        if m:
-            data["dob"] = m.group(1)
-            break
+    dob_match = re.findall(r"\d{1,2}-[a-z]{3}-\d{2,4}", " ".join(dob_ctx))
+    if dob_match:
+        data["dob"] = dob_match[0]
 
     # ================= PATIENT ID =================
-    pid = re.search(r"\d{4}-\d{4}-\d{4}-\d{6}", text)
+    pid = re.findall(r"\d{4}-\d{4}-\d{4}-\d{6}", text)
     if pid:
-        data["patient_id"] = pid.group()
+        data["patient_id"] = pid[0]
 
     # ================= AGE =================
-    age = re.search(r"\d+\s*years", text)
+    age = re.findall(r"\d+\s*years", text)
     if age:
-        data["age"] = age.group()
+        data["age"] = age[0]
 
     # ================= GENDER =================
     if "male" in text:
         data["gender"] = "male"
-    if "female" in text:
+    elif "female" in text:
         data["gender"] = "female"
 
     # ================= COUNTRY =================
@@ -139,38 +134,28 @@ def extract(text):
     return data
 
 # =========================
-# SAFE COMPARE
+# COMPARE ENGINE
 # =========================
 def compare(qc, ag):
 
     results = []
 
-    keys = qc.keys()
-
-    for k in keys:
+    for k in qc.keys():
 
         qc_v = qc.get(k)
         ag_v = ag.get(k)
 
-        # normalize lists
-        if isinstance(qc_v, list):
-            qc_v = set(qc_v)
-        else:
-            qc_v = {qc_v} if qc_v else set()
+        qc_set = set(qc_v) if isinstance(qc_v, set) else {qc_v} if qc_v else set()
+        ag_set = set(ag_v) if isinstance(ag_v, set) else {ag_v} if ag_v else set()
 
-        if isinstance(ag_v, list):
-            ag_v = set(ag_v)
-        else:
-            ag_v = {ag_v} if ag_v else set()
+        qc_set.discard("")
+        ag_set.discard("")
 
-        qc_v.discard("")
-        ag_v.discard("")
-
-        if qc_v != ag_v:
+        if qc_set != ag_set:
             results.append({
                 "field": k.upper(),
-                "qc": list(qc_v),
-                "agent": list(ag_v)
+                "qc": list(qc_set),
+                "agent": list(ag_set)
             })
 
     return results
@@ -183,11 +168,8 @@ ag_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
 
 if qc_file and ag_file:
 
-    qc_text = read_pdf(qc_file)
-    ag_text = read_pdf(ag_file)
-
-    qc = extract(qc_text)
-    ag = extract(ag_text)
+    qc = extract(read_pdf(qc_file))
+    ag = extract(read_pdf(ag_file))
 
     if st.button("Run Comparison"):
 
@@ -202,6 +184,5 @@ if qc_file and ag_file:
 
 QC: `{r['qc']}`  
 Agent: `{r['agent']}`
-
 ---
 """)
