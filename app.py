@@ -2,24 +2,9 @@ import streamlit as st
 import pdfplumber
 import re
 
-# =========================
-# CONFIG
-# =========================
 st.set_page_config(page_title="PV QC System", layout="wide")
-
 st.title("Pharmacovigilance QC System")
-st.markdown("QC vs Agent – structured pharma-grade validation (PDF only)")
-
-# =========================
-# CLEAN TEXT
-# =========================
-def clean(text):
-    if not text:
-        return ""
-    text = text.replace("\xa0", " ")
-    text = text.replace("", "\n")
-    text = text.replace("•", "\n")
-    return text
+st.markdown("QC vs Agent — full discrepancy detection engine")
 
 # =========================
 # PDF READER
@@ -28,53 +13,75 @@ def read_pdf(file):
     text = []
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text.append(page_text)
+            t = page.extract_text()
+            if t:
+                text.append(t)
     return "\n".join(text)
 
 # =========================
-# NOISE FILTER (CRITICAL FIX)
+# CLEAN TEXT
 # =========================
-def is_noise(text):
-    t = text.lower()
+def clean(text):
+    text = text.replace("", "\n").replace("•", "\n")
+    text = text.replace("\xa0", " ")
+    return text
+
+# =========================
+# NOISE FILTER
+# =========================
+def is_noise(x):
+    x = x.lower().strip()
     return (
-        "click or tap" in t or
-        "choose an item" in t or
-        "enter text" in t or
-        t.strip() == ""
+        x == "" or
+        "click or tap" in x or
+        "choose an item" in x or
+        "enter text" in x
     )
 
 # =========================
-# SMART VALUE FINDER
+# LABEL MAP (PHARMA CORE)
 # =========================
-def find_value(lines, i):
+LABELS = {
+    "drug": ["product name", "drug"],
+    "dose": ["dose"],
+    "indication": ["indication"],
+    "mrd": ["date reported", "mrd"],
+    "patient_id": ["patient id"],
+    "dob": ["date of birth"],
+    "age": ["age"],
+    "gender": ["gender"],
+    "country": ["country"]
+}
 
+# =========================
+# SPLIT LINES
+# =========================
+def get_lines(text):
+    text = clean(text)
+    lines = [re.sub(r"\s+", " ", l.strip()) for l in text.split("\n")]
+    return [l for l in lines if l]
+
+# =========================
+# EXTRACT VALUE BLOCK
+# =========================
+def get_value_block(lines, start, end):
     values = []
 
-    for j in range(i + 1, min(i + 8, len(lines))):
-
-        line = lines[j]
-
-        # stop if new label starts
-        if ":" in line and len(line.split(":")[0]) < 60:
-            break
-
-        if is_noise(line):
+    for i in range(start + 1, end):
+        if is_noise(lines[i]):
             continue
-
-        values.append(line.strip())
+        if any(lbl in lines[i].lower() for lbls in LABELS.values() for lbl in lbls):
+            break
+        values.append(lines[i])
 
     return " ".join(values).strip()
 
 # =========================
-# FIELD EXTRACTOR (FIXED)
+# MAIN PARSER (SECTION BASED)
 # =========================
 def extract_fields(text):
 
-    text = clean(text)
-
-    lines = [re.sub(r"\s+", " ", l.strip()) for l in text.split("\n") if l.strip()]
+    lines = get_lines(text)
 
     fields = {
         "drug": "",
@@ -88,96 +95,66 @@ def extract_fields(text):
         "country": ""
     }
 
-    def extract(line, i):
+    label_positions = []
 
-        if ":" in line:
-            val = line.split(":", 1)[1].strip()
-            if not is_noise(val):
-                return val
-
-        return find_value(lines, i)
+    def is_label(line):
+        l = line.lower()
+        return any(any(k in l for k in v) for v in LABELS.values())
 
     for i, line in enumerate(lines):
+        if is_label(line):
+            label_positions.append(i)
 
-        l = line.lower()
+    label_positions.append(len(lines))
 
-        # =========================
-        # DRUG (CRITICAL)
-        # =========================
-        if "product name" in l:
-            fields["drug"] = extract(line, i)
+    for i in range(len(label_positions) - 1):
 
-        # =========================
-        # DOSE
-        # =========================
-        elif "dose" in l and "regimen" not in l:
-            fields["dose"] = extract(line, i)
+        start = label_positions[i]
+        end = label_positions[i + 1]
 
-        # =========================
-        # INDICATION
-        # =========================
-        elif "indication" in l:
-            fields["indication"] = extract(line, i)
+        label_line = lines[start].lower()
+        value = get_value_block(lines, start, end)
 
-        # =========================
-        # MRD
-        # =========================
-        elif "date reported" in l or "mrd" in l:
-            fields["mrd"] = extract(line, i)
+        # assign fields
+        if any(x in label_line for x in LABELS["drug"]):
+            fields["drug"] = value
 
-        # =========================
-        # PATIENT ID
-        # =========================
-        elif "patient id" in l:
-            fields["patient_id"] = extract(line, i)
+        elif any(x in label_line for x in LABELS["dose"]):
+            fields["dose"] = value
 
-        # =========================
-        # DOB
-        # =========================
-        elif "date of birth" in l:
-            fields["dob"] = extract(line, i)
+        elif any(x in label_line for x in LABELS["indication"]):
+            fields["indication"] = value
 
-        # =========================
-        # AGE
-        # =========================
-        elif "age" in l:
-            fields["age"] = extract(line, i)
+        elif any(x in label_line for x in LABELS["mrd"]):
+            fields["mrd"] = value
 
-        # =========================
-        # GENDER
-        # =========================
-        elif "gender" in l:
-            fields["gender"] = extract(line, i)
+        elif any(x in label_line for x in LABELS["patient_id"]):
+            fields["patient_id"] = value
 
-        # =========================
-        # COUNTRY
-        # =========================
-        elif "country" in l:
-            fields["country"] = extract(line, i)
+        elif any(x in label_line for x in LABELS["dob"]):
+            fields["dob"] = value
+
+        elif any(x in label_line for x in LABELS["age"]):
+            fields["age"] = value
+
+        elif any(x in label_line for x in LABELS["gender"]):
+            fields["gender"] = value
+
+        elif any(x in label_line for x in LABELS["country"]):
+            fields["country"] = value
 
     return {k: v.lower().strip() for k, v in fields.items() if v}
 
 # =========================
-# SEVERITY ENGINE
-# =========================
-def severity(field):
-
-    if field in ["mrd", "dob", "patient_id"]:
-        return "HIGH"
-    if field in ["drug", "dose", "indication"]:
-        return "MODERATE"
-    return "LOW"
-
-# =========================
-# COMPARE ENGINE
+# COMPARE ENGINE (STRICT)
 # =========================
 def compare(qc, agent):
 
     results = []
 
-    keys = set(qc.keys()).union(set(agent.keys()))
+    all_keys = set(qc.keys()).union(set(agent.keys()))
 
-    for k in keys:
+    for k in all_keys:
 
         qc_val = qc.get(k, "MISSING")
         ag_val = agent.get(k, "MISSING")
@@ -187,8 +164,7 @@ def compare(qc, agent):
             results.append({
                 "field": k.upper(),
                 "qc": qc_val,
-                "agent": ag_val,
-                "severity": severity(k)
+                "agent": ag_val
             })
 
     return results
@@ -204,19 +180,13 @@ if qc_file and agent_file:
     qc_text = read_pdf(qc_file)
     agent_text = read_pdf(agent_file)
 
-    st.subheader("Raw QC Text")
-    st.text_area("", qc_text, height=200)
-
-    st.subheader("Raw Agent Text")
-    st.text_area("", agent_text, height=200)
-
     qc_data = extract_fields(qc_text)
     agent_data = extract_fields(agent_text)
 
-    st.subheader("QC Extracted Data")
+    st.subheader("QC Extracted")
     st.json(qc_data)
 
-    st.subheader("Agent Extracted Data")
+    st.subheader("Agent Extracted")
     st.json(agent_data)
 
     if st.button("Run QC Check"):
@@ -232,9 +202,8 @@ if qc_file and agent_file:
                 st.markdown(f"""
 ### {r['field']}
 
-QC Value: **{r['qc']}**  
-Agent Value: **{r['agent']}**  
-Severity: **{r['severity']}**
+QC: **{r['qc']}**  
+Agent: **{r['agent']}**
 
 ---
 """)
