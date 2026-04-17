@@ -1,7 +1,6 @@
 import streamlit as st
 import pdfplumber
-import xml.etree.ElementTree as ET
-import zipfile
+from docx import Document
 
 # =========================
 # CONFIG
@@ -9,12 +8,12 @@ import zipfile
 st.set_page_config(page_title="PV QC System", layout="wide")
 
 st.title("Pharmacovigilance Control System")
-st.markdown("QC vs Agent comparison (robust DOCX + PDF extraction)")
+st.markdown("QC vs Agent - robust pharma-grade comparison")
 
 # =========================
 # CLEAN TEXT
 # =========================
-def clean_text(text):
+def clean(text):
     if not text:
         return ""
     text = text.replace("\xa0", " ")
@@ -23,38 +22,44 @@ def clean_text(text):
     return text
 
 # =========================
-# PDF READER
+# PDF (IMPROVED)
 # =========================
 def read_pdf(file):
-    text = ""
+    text = []
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
-            text += page.extract_text() or ""
-    return text
+            t = page.extract_text()
+            if t:
+                text.append(t)
+    return "\n".join(text)
 
 # =========================
-# DOCX READER (XML METHOD - FIXED)
+# DOCX (STABLE METHOD)
 # =========================
 def read_docx(file):
+    doc = Document(file)
+
     text = []
 
-    try:
-        with zipfile.ZipFile(file) as z:
-            xml_content = z.read("word/document.xml")
+    # paragraphs
+    for p in doc.paragraphs:
+        if p.text.strip():
+            text.append(p.text.strip())
 
-        tree = ET.fromstring(xml_content)
-
-        for elem in tree.iter():
-            if elem.tag.endswith("t") and elem.text:
-                text.append(elem.text)
-
-    except Exception:
-        return ""
+    # tables
+    for table in doc.tables:
+        for row in table.rows:
+            row_text = []
+            for cell in row.cells:
+                if cell.text.strip():
+                    row_text.append(cell.text.strip())
+            if row_text:
+                text.append(" ".join(row_text))
 
     return "\n".join(text)
 
 # =========================
-# FILE HANDLER
+# EXTRACT TEXT
 # =========================
 def extract_text(file):
     if file.name.lower().endswith(".pdf"):
@@ -62,11 +67,12 @@ def extract_text(file):
     return read_docx(file)
 
 # =========================
-# FIELD EXTRACTION (ROBUST PV PARSER)
+# SMART FIELD PARSER (FIX)
 # =========================
 def extract_fields(text):
 
-    text = clean_text(text)
+    text = clean(text)
+
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     fields = {
@@ -81,65 +87,67 @@ def extract_fields(text):
         "country": ""
     }
 
-    def get_value(line):
-        if ":" in line:
-            return line.split(":", 1)[1].strip()
-        return ""
+    current_key = None
 
     for line in lines:
 
         l = line.lower()
 
+        # detect label
         if "product name" in l:
-            fields["drug"] = get_value(line)
-
+            current_key = "drug"
+            continue
         elif "dose" in l:
-            fields["dose"] = get_value(line)
-
+            current_key = "dose"
+            continue
         elif "indication" in l:
-            fields["indication"] = get_value(line)
-
+            current_key = "indication"
+            continue
         elif "date reported" in l or "mrd" in l:
-            fields["mrd"] = get_value(line)
-
+            current_key = "mrd"
+            continue
         elif "patient id" in l:
-            fields["patient_id"] = get_value(line)
-
+            current_key = "patient_id"
+            continue
         elif "date of birth" in l:
-            fields["dob"] = get_value(line)
-
+            current_key = "dob"
+            continue
         elif "age" in l:
-            fields["age"] = get_value(line)
-
+            current_key = "age"
+            continue
         elif "gender" in l:
-            fields["gender"] = get_value(line)
-
+            current_key = "gender"
+            continue
         elif "country" in l:
-            fields["country"] = get_value(line)
+            current_key = "country"
+            continue
+
+        # value capture (IMPORTANT FIX)
+        if current_key and ":" not in line:
+            if fields[current_key] == "":
+                fields[current_key] = line.strip()
 
     return {k: v.lower().strip() for k, v in fields.items() if v}
 
 # =========================
-# SEVERITY RULES
+# SEVERITY
 # =========================
 def severity(field):
 
     if field in ["mrd", "dob", "patient_id"]:
         return "HIGH"
-
     if field in ["drug", "dose", "indication"]:
         return "MODERATE"
-
     return "LOW"
 
 # =========================
-# COMPARE ENGINE
+# COMPARE
 # =========================
 def compare(qc, agent):
 
     results = []
 
-    keys = set(qc.keys()).union(set(agent.keys()))
+    keys = set(qc.keys()).union(agent.keys())
 
     for k in keys:
 
@@ -160,24 +168,30 @@ def compare(qc, agent):
 # =========================
 # UI
 # =========================
-qc_file = st.file_uploader("Upload QC File (PDF / DOCX)", type=["pdf", "docx"])
-agent_file = st.file_uploader("Upload Agent File (PDF / DOCX)", type=["pdf", "docx"])
+qc_file = st.file_uploader("Upload QC File", type=["pdf", "docx"])
+agent_file = st.file_uploader("Upload Agent File", type=["pdf", "docx"])
 
 if qc_file and agent_file:
 
     qc_text = extract_text(qc_file)
     agent_text = extract_text(agent_file)
 
+    st.subheader("DEBUG QC RAW TEXT")
+    st.text_area("QC TEXT", qc_text, height=200)
+
+    st.subheader("DEBUG AGENT RAW TEXT")
+    st.text_area("AGENT TEXT", agent_text, height=200)
+
     qc_data = extract_fields(qc_text)
     agent_data = extract_fields(agent_text)
 
-    st.subheader("Debug - QC Extracted Data")
+    st.subheader("QC Extracted")
     st.json(qc_data)
 
-    st.subheader("Debug - Agent Extracted Data")
+    st.subheader("Agent Extracted")
     st.json(agent_data)
 
-    if st.button("Run QC Validation"):
+    if st.button("Run QC Check"):
 
         results = compare(qc_data, agent_data)
 
@@ -187,12 +201,11 @@ if qc_file and agent_file:
             st.error("No discrepancies detected")
         else:
             for r in results:
-
                 st.markdown(f"""
 ### {r['field']}
 
-QC Value: **{r['qc']}**  
-Agent Value: **{r['agent']}**  
+QC: **{r['qc']}**  
+Agent: **{r['agent']}**  
 Severity: **{r['severity']}**
 
 ---
