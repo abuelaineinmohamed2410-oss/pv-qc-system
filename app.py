@@ -5,7 +5,7 @@ import re
 
 st.set_page_config(page_title="PV QC System", layout="wide")
 
-st.title("Pharmacovigilance Quality Control System")
+st.title("Pharmacovigilance  Control System")
 st.markdown("QC vs Agent comparison (pharma-grade mismatch detection)")
 
 # -------------------------
