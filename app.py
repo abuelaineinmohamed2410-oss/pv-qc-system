@@ -1,12 +1,13 @@
 import streamlit as st
 import pdfplumber
 import re
+from collections import defaultdict
 
 st.set_page_config(page_title="PV QC System", layout="wide")
-st.title("Pharmacovigilance QC System (Enterprise Mode)")
+st.title("Pharmacovigilance QC System (Structured Engine)")
 
 # =========================
-# PDF READER
+# PDF READ
 # =========================
 def read_pdf(file):
     text = ""
@@ -15,123 +16,117 @@ def read_pdf(file):
             t = p.extract_text()
             if t:
                 text += t + "\n"
-    return text
+    return text.lower()
 
 # =========================
-# CLEAN
+# NORMALIZATION (CRITICAL FIX)
 # =========================
-def clean(t):
-    return t.replace("", "\n").replace("•", "\n")
+def norm(x):
+    x = x.lower()
+    x = x.replace("  ", " ")
+    x = x.replace("mg", " mg")
+    x = re.sub(r"\s+", " ", x)
+    return x.strip()
 
 # =========================
-# EXTRACT FROM TEXT (SMART REGEX CORE)
+# EXTRACT PRODUCTS (BLOCK BASED)
 # =========================
-def extract_all(text):
+def extract_products(text):
 
-    text = clean(text).lower()
+    products = []
 
-    data = {
-        "drugs": [],
-        "dose": [],
-        "mrd": "",
-        "dob": "",
-        "patient_id": "",
-        "gender": "",
-        "age": "",
-        "country": "",
-        "aes": []
+    blocks = re.split(r"the products|product information", text)
+
+    for block in blocks:
+
+        drugs = re.findall(r"entresto\s*\d+\s*mg", block)
+        doses = re.findall(r"\d+\s*mg", block)
+
+        for d in drugs:
+            product = {
+                "drug": norm(d),
+                "dose": []
+            }
+
+            # attach doses near drug (context-based)
+            for dose in doses:
+                product["dose"].append(norm(dose))
+
+            products.append(product)
+
+    return products
+
+# =========================
+# EXTRACT AES (STRUCTURED)
+# =========================
+def extract_aes(text):
+
+    aes = []
+
+    patterns = [
+        "non compliance",
+        "stopping",
+        "off-label",
+        "off label",
+        "adverse event"
+    ]
+
+    for p in patterns:
+        if p in text:
+            aes.append(p)
+
+    return sorted(set(aes))
+
+# =========================
+# EXTRACT FULL CASE
+# =========================
+def extract_case(text):
+
+    return {
+        "products": extract_products(text),
+        "aes": extract_aes(text)
     }
 
-    # ================= DRUG =================
-    drugs = re.findall(r"entresto\s*\d+\s*mg", text)
-    if drugs:
-        data["drugs"] = list(set(drugs))
-
-    # ================= DOSE =================
-    doses = re.findall(r"\d+\s*mg", text)
-    if doses:
-        data["dose"] = list(set(doses))
-
-    # ================= MRD =================
-    mrd = re.search(r"\d{1,2}-[a-z]{3}-\d{2,4}", text)
-    if mrd:
-        data["mrd"] = mrd.group()
-
-    # ================= DOB =================
-    dob = re.search(r"\d{1,2}-[a-z]{3}-\d{2,4}", text)
-    if dob:
-        data["dob"] = dob.group()
-
-    # ================= PATIENT ID =================
-    pid = re.search(r"\d{4}-\d{4}-\d{4}-\d{6}", text)
-    if pid:
-        data["patient_id"] = pid.group()
-
-    # ================= GENDER =================
-    if "male" in text:
-        data["gender"] = "male"
-    elif "female" in text:
-        data["gender"] = "female"
-
-    # ================= AGE =================
-    age = re.search(r"\d+\s*years", text)
-    if age:
-        data["age"] = age.group()
-
-    # ================= COUNTRY =================
-    if "egypt" in text:
-        data["country"] = "egypt"
-
-    # ================= AE DETECTION =================
-    ae_keywords = ["non compliance", "stopping", "off-label", "off label", "adverse event"]
-    for k in ae_keywords:
-        if k in text:
-            data["aes"].append(k)
-
-    return data
-
 # =========================
-# COMPARE (REAL LOGIC)
+# COMPARE PRODUCTS PROPERLY
 # =========================
-def compare(qc, agent):
+def compare_products(qc_products, ag_products):
 
     results = []
 
-    # DRUG mismatch
-    if set(qc["drugs"]) != set(agent["drugs"]):
-        results.append(("DRUG", qc["drugs"], agent["drugs"]))
+    qc_set = {(p["drug"], tuple(sorted(p["dose"]))) for p in qc_products}
+    ag_set = {(p["drug"], tuple(sorted(p["dose"]))) for p in ag_products}
 
-    # DOSE mismatch
-    if set(qc["dose"]) != set(agent["dose"]):
-        results.append(("DOSE", qc["dose"], agent["dose"]))
+    if qc_set != ag_set:
+        results.append({
+            "field": "PRODUCTS",
+            "qc": list(qc_set),
+            "agent": list(ag_set)
+        })
 
-    # MRD mismatch
-    if qc["mrd"] != agent["mrd"]:
-        results.append(("MRD", qc["mrd"], agent["mrd"]))
+    return results
 
-    # DOB mismatch
-    if qc["dob"] != agent["dob"]:
-        results.append(("DOB", qc["dob"], agent["dob"]))
+# =========================
+# COMPARE AES
+# =========================
+def compare_aes(qc_aes, ag_aes):
 
-    # PATIENT ID
-    if qc["patient_id"] != agent["patient_id"]:
-        results.append(("PATIENT ID", qc["patient_id"], agent["patient_id"]))
+    if set(qc_aes) != set(ag_aes):
+        return [{
+            "field": "ADVERSE EVENTS",
+            "qc": qc_aes,
+            "agent": ag_aes
+        }]
+    return []
 
-    # GENDER
-    if qc["gender"] != agent["gender"]:
-        results.append(("GENDER", qc["gender"], agent["gender"]))
+# =========================
+# FULL COMPARE
+# =========================
+def compare(qc, ag):
 
-    # AGE
-    if qc["age"] != agent["age"]:
-        results.append(("AGE", qc["age"], agent["age"]))
-
-    # COUNTRY
-    if qc["country"] != agent["country"]:
-        results.append(("COUNTRY", qc["country"], agent["country"]))
-
-    # AE comparison
-    if set(qc["aes"]) != set(agent["aes"]):
-        results.append(("ADVERSE EVENTS", qc["aes"], agent["aes"]))
+    results = []
+    results += compare_products(qc["products"], ag["products"])
+    results += compare_aes(qc["aes"], ag["aes"])
 
     return results
 
@@ -139,32 +134,32 @@ def compare(qc, agent):
 # UI
 # =========================
 qc_file = st.file_uploader("Upload QC PDF", type=["pdf"])
-agent_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
+ag_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
 
-if qc_file and agent_file:
+if qc_file and ag_file:
 
     qc_text = read_pdf(qc_file)
-    agent_text = read_pdf(agent_file)
+    ag_text = read_pdf(ag_file)
 
-    qc_data = extract_all(qc_text)
-    agent_data = extract_all(agent_text)
+    qc = extract_case(qc_text)
+    ag = extract_case(ag_text)
 
     if st.button("Run QC Check"):
 
-        results = compare(qc_data, agent_data)
+        results = compare(qc, ag)
 
         st.subheader("Mismatch Report")
 
         if not results:
             st.success("No discrepancies detected")
         else:
-            for field, qc_val, ag_val in results:
+            for r in results:
 
                 st.markdown(f"""
-### {field}
+### {r['field']}
 
-QC: **{qc_val}**  
-Agent: **{ag_val}**
+QC: `{r['qc']}`  
+Agent: `{r['agent']}`
 
 ---
 """)
