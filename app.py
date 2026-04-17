@@ -99,6 +99,11 @@ def extract(text):
         r"indication[:\s]*([a-z\s]+)"
     ])
 
+     # Action Taken Due to Side Effect
+    data["Action Taken Due to Side Effect"] = extract_field(text, [
+        r"Action Taken Due to Side Effect[:\s]*([a-z\s]+)"
+    ])
+
     # MRD
     mrd = re.search(r"\d{1,2}-[a-z]{3}-\d{2,4}", text)
     data["mrd"] = mrd.group(0) if mrd else ""
