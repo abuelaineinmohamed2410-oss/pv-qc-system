@@ -1,13 +1,12 @@
 import streamlit as st
 import pdfplumber
 import re
-from collections import defaultdict
 
 st.set_page_config(page_title="PV QC System", layout="wide")
-st.title("Pharmacovigilance QC System (Structured Engine)")
+st.title("Pharmacovigilance QC System")
 
 # =========================
-# PDF READ
+# READ PDF
 # =========================
 def read_pdf(file):
     text = ""
@@ -19,51 +18,80 @@ def read_pdf(file):
     return text.lower()
 
 # =========================
-# NORMALIZATION (CRITICAL FIX)
+# NORMALIZE
 # =========================
 def norm(x):
     x = x.lower()
-    x = x.replace("  ", " ")
     x = x.replace("mg", " mg")
     x = re.sub(r"\s+", " ", x)
     return x.strip()
 
 # =========================
-# EXTRACT PRODUCTS (BLOCK BASED)
+# SPLIT PRODUCT BLOCKS (CRITICAL FIX)
+# =========================
+def split_products(text):
+
+    # real separation of repeated sections
+    blocks = re.split(r"the products|product information", text)
+
+    return [b for b in blocks if len(b.strip()) > 50]
+
+# =========================
+# EXTRACT ONE PRODUCT FROM BLOCK
+# =========================
+def extract_product(block):
+
+    # drug
+    drug_match = re.search(r"entresto\s*\d+\s*mg", block)
+    drug = norm(drug_match.group()) if drug_match else ""
+
+    # dose (ONLY from same block)
+    doses = re.findall(r"\d+\s*mg", block)
+    doses = list(set([norm(d) for d in doses]))
+
+    # frequency (optional but useful)
+    freq = ""
+    if "once daily" in block:
+        freq = "once daily"
+    elif "twice daily" in block:
+        freq = "twice daily"
+    elif "once a day" in block:
+        freq = "once daily"
+    elif "other" in block:
+        freq = "other"
+
+    return {
+        "drug": drug,
+        "dose": sorted(doses),
+        "frequency": freq
+    }
+
+# =========================
+# FULL PRODUCT PARSER
 # =========================
 def extract_products(text):
 
+    blocks = split_products(text)
+
     products = []
 
-    blocks = re.split(r"the products|product information", text)
+    for b in blocks:
 
-    for block in blocks:
+        p = extract_product(b)
 
-        drugs = re.findall(r"entresto\s*\d+\s*mg", block)
-        doses = re.findall(r"\d+\s*mg", block)
-
-        for d in drugs:
-            product = {
-                "drug": norm(d),
-                "dose": []
-            }
-
-            # attach doses near drug (context-based)
-            for dose in doses:
-                product["dose"].append(norm(dose))
-
-            products.append(product)
+        if p["drug"]:
+            products.append(p)
 
     return products
 
 # =========================
-# EXTRACT AES (STRUCTURED)
+# AE EXTRACTION (IMPROVED)
 # =========================
 def extract_aes(text):
 
     aes = []
 
-    patterns = [
+    keywords = [
         "non compliance",
         "stopping",
         "off-label",
@@ -71,14 +99,14 @@ def extract_aes(text):
         "adverse event"
     ]
 
-    for p in patterns:
-        if p in text:
-            aes.append(p)
+    for k in keywords:
+        if k in text:
+            aes.append(k)
 
     return sorted(set(aes))
 
 # =========================
-# EXTRACT FULL CASE
+# EXTRACT CASE
 # =========================
 def extract_case(text):
 
@@ -88,47 +116,41 @@ def extract_case(text):
     }
 
 # =========================
-# COMPARE PRODUCTS PROPERLY
+# COMPARE PRODUCTS (FIXED)
 # =========================
-def compare_products(qc_products, ag_products):
+def compare_products(qc, ag):
 
-    results = []
-
-    qc_set = {(p["drug"], tuple(sorted(p["dose"]))) for p in qc_products}
-    ag_set = {(p["drug"], tuple(sorted(p["dose"]))) for p in ag_products}
+    qc_set = {(p["drug"], tuple(p["dose"]), p["frequency"]) for p in qc}
+    ag_set = {(p["drug"], tuple(p["dose"]), p["frequency"]) for p in ag}
 
     if qc_set != ag_set:
-        results.append({
+        return [{
             "field": "PRODUCTS",
-            "qc": list(qc_set),
-            "agent": list(ag_set)
-        })
+            "qc": qc_set,
+            "agent": ag_set
+        }]
 
-    return results
+    return []
 
 # =========================
 # COMPARE AES
 # =========================
-def compare_aes(qc_aes, ag_aes):
+def compare_aes(qc, ag):
 
-    if set(qc_aes) != set(ag_aes):
+    if set(qc) != set(ag):
         return [{
             "field": "ADVERSE EVENTS",
-            "qc": qc_aes,
-            "agent": ag_aes
+            "qc": qc,
+            "agent": ag
         }]
     return []
 
 # =========================
-# FULL COMPARE
+# COMPARE FULL
 # =========================
 def compare(qc, ag):
 
-    results = []
-    results += compare_products(qc["products"], ag["products"])
-    results += compare_aes(qc["aes"], ag["aes"])
-
-    return results
+    return compare_products(qc["products"], ag["products"]) + compare_aes(qc["aes"], ag["aes"])
 
 # =========================
 # UI
