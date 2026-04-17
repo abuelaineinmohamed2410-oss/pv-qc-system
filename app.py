@@ -2,8 +2,41 @@ import streamlit as st
 import pdfplumber
 import re
 
-st.set_page_config(page_title="PV QC System", layout="wide")
-st.title("Pharmacovigilance QC System")
+# =========================
+# PAGE CONFIG (PRO UI)
+# =========================
+st.set_page_config(
+    page_title="PV QC System",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# =========================
+# HEADER (PROFESSIONAL STYLE)
+# =========================
+st.markdown("""
+<style>
+.main-title {
+    font-size: 32px;
+    font-weight: 600;
+    margin-bottom: 5px;
+}
+.sub-title {
+    font-size: 16px;
+    color: #666;
+    margin-bottom: 20px;
+}
+.card {
+    background-color: #f8f9fa;
+    padding: 15px;
+    border-radius: 10px;
+    border: 1px solid #e0e0e0;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("<div class='main-title'>Pharmacovigilance QC System</div>", unsafe_allow_html=True)
+st.markdown("<div class='sub-title'>QC vs Agent — discrepancy detection engine</div>", unsafe_allow_html=True)
 
 # =========================
 # PDF READER
@@ -18,7 +51,7 @@ def read_pdf(file):
     return text
 
 # =========================
-# CLEAN
+# CLEAN TEXT
 # =========================
 def clean(text):
     text = text.replace("", "\n").replace("•", "\n")
@@ -33,7 +66,7 @@ def noise(x):
     return "click or tap" in x or "choose an item" in x or "enter text" in x
 
 # =========================
-# TARGET LABELS
+# LABELS
 # =========================
 LABELS = {
     "drug": ["product name"],
@@ -48,12 +81,11 @@ LABELS = {
 }
 
 # =========================
-# SMART TOKEN PARSER (FIX)
+# EXTRACTION ENGINE (UNCHANGED LOGIC)
 # =========================
 def extract_fields(text):
 
     text = clean(text)
-
     lines = [re.sub(r"\s+", " ", l.strip()) for l in text.split("\n") if l.strip()]
 
     fields = {k: "" for k in LABELS.keys()}
@@ -66,22 +98,18 @@ def extract_fields(text):
 
             if any(k in low for k in keys):
 
-                # CASE 1: same line value
                 if ":" in line:
                     val = line.split(":", 1)[1].strip()
                     if val and not noise(val):
                         fields[field] = val
                         continue
 
-                # CASE 2: next meaningful line
                 for j in range(i + 1, min(i + 6, len(lines))):
-
                     v = lines[j].strip()
 
                     if noise(v):
                         continue
 
-                    # stop if next label starts
                     if any(k in v.lower() for ks in LABELS.values() for k in ks):
                         break
 
@@ -91,7 +119,7 @@ def extract_fields(text):
     return {k: v.lower().strip() for k, v in fields.items() if v}
 
 # =========================
-# COMPARE
+# COMPARE ENGINE
 # =========================
 def compare(qc, agent):
 
@@ -104,20 +132,24 @@ def compare(qc, agent):
         a = agent.get(k, "MISSING")
 
         if q != a:
-            results.append({
-                "field": k.upper(),
-                "qc": q,
-                "agent": a
-            })
+            results.append((k.upper(), q, a))
 
     return results
 
 # =========================
-# UI
+# UI INPUT SECTION
 # =========================
-qc_file = st.file_uploader("Upload QC PDF", type=["pdf"])
-agent_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
+col1, col2 = st.columns(2)
 
+with col1:
+    qc_file = st.file_uploader("Upload QC PDF", type=["pdf"])
+
+with col2:
+    agent_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
+
+# =========================
+# PROCESS
+# =========================
 if qc_file and agent_file:
 
     qc_text = read_pdf(qc_file)
@@ -126,25 +158,34 @@ if qc_file and agent_file:
     qc_data = extract_fields(qc_text)
     agent_data = extract_fields(agent_text)
 
-    st.subheader("QC Extracted")
-    st.json(qc_data)
-
-    st.subheader("Agent Extracted")
-    st.json(agent_data)
-
-    if st.button("Run QC Check"):
+    if st.button("Run QC Validation"):
 
         results = compare(qc_data, agent_data)
 
-        st.subheader("Mismatch Report")
+        st.markdown("### QC Validation Report")
 
         if not results:
-            st.error("No discrepancies detected (check extraction!)")
+
+            st.success("No discrepancies detected")
+
         else:
-            for r in results:
+
+            st.markdown("""
+            <div class='card'>
+            <h4>Detected Discrepancies</h4>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.write("")
+
+            for field, qc_val, ag_val in results:
+
                 st.markdown(f"""
-### {r['field']}
-QC: **{r['qc']}**  
-Agent: **{r['agent']}**
+### {field}
+
+| QC Value | Agent Value |
+|----------|-------------|
+| {qc_val} | {ag_val} |
+
 ---
 """)
