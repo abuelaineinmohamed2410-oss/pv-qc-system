@@ -5,10 +5,10 @@ import re
 # =========================
 # CONFIG
 # =========================
-st.set_page_config(page_title="PV QC PDF System", layout="wide")
+st.set_page_config(page_title="PV QC System", layout="wide")
 
-st.title("Pharmacovigilance Control System (PDF Only)")
-st.markdown("QC vs Agent - structured pharma-grade mismatch detection")
+st.title("Pharmacovigilance QC System")
+st.markdown("QC vs Agent – structured pharma-grade validation (PDF only)")
 
 # =========================
 # CLEAN TEXT
@@ -34,30 +34,41 @@ def read_pdf(file):
     return "\n".join(text)
 
 # =========================
-# EXTRACT VALUE (ROBUST)
+# NOISE FILTER (CRITICAL FIX)
 # =========================
-def extract_value_forward(lines, i):
+def is_noise(text):
+    t = text.lower()
+    return (
+        "click or tap" in t or
+        "choose an item" in t or
+        "enter text" in t or
+        t.strip() == ""
+    )
 
-    for j in range(i + 1, min(i + 6, len(lines))):
+# =========================
+# SMART VALUE FINDER
+# =========================
+def find_value(lines, i):
+
+    values = []
+
+    for j in range(i + 1, min(i + 8, len(lines))):
 
         line = lines[j]
 
-        if not line:
-            continue
-
         # stop if new label starts
-        if ":" in line and len(line.split(":")[0]) < 40:
+        if ":" in line and len(line.split(":")[0]) < 60:
             break
 
-        if "click or tap" in line.lower():
+        if is_noise(line):
             continue
 
-        return line.strip()
+        values.append(line.strip())
 
-    return ""
+    return " ".join(values).strip()
 
 # =========================
-# PV FIELD EXTRACTION
+# FIELD EXTRACTOR (FIXED)
 # =========================
 def extract_fields(text):
 
@@ -77,6 +88,15 @@ def extract_fields(text):
         "country": ""
     }
 
+    def extract(line, i):
+
+        if ":" in line:
+            val = line.split(":", 1)[1].strip()
+            if not is_noise(val):
+                return val
+
+        return find_value(lines, i)
+
     for i, line in enumerate(lines):
 
         l = line.lower()
@@ -85,78 +105,60 @@ def extract_fields(text):
         # DRUG (CRITICAL)
         # =========================
         if "product name" in l:
-
-            if ":" in line:
-                val = line.split(":", 1)[1].strip()
-                if val:
-                    fields["drug"] = val
-                else:
-                    fields["drug"] = extract_value_forward(lines, i)
-            else:
-                fields["drug"] = extract_value_forward(lines, i)
+            fields["drug"] = extract(line, i)
 
         # =========================
         # DOSE
         # =========================
-        elif "dose" in l:
-
-            if ":" in line:
-                val = line.split(":", 1)[1].strip()
-                fields["dose"] = val if val else extract_value_forward(lines, i)
-            else:
-                fields["dose"] = extract_value_forward(lines, i)
+        elif "dose" in l and "regimen" not in l:
+            fields["dose"] = extract(line, i)
 
         # =========================
         # INDICATION
         # =========================
         elif "indication" in l:
-
-            if ":" in line:
-                val = line.split(":", 1)[1].strip()
-                fields["indication"] = val if val else extract_value_forward(lines, i)
-            else:
-                fields["indication"] = extract_value_forward(lines, i)
+            fields["indication"] = extract(line, i)
 
         # =========================
         # MRD
         # =========================
         elif "date reported" in l or "mrd" in l:
-            fields["mrd"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
+            fields["mrd"] = extract(line, i)
 
         # =========================
         # PATIENT ID
         # =========================
         elif "patient id" in l:
-            fields["patient_id"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
+            fields["patient_id"] = extract(line, i)
 
         # =========================
         # DOB
         # =========================
         elif "date of birth" in l:
-            fields["dob"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
+            fields["dob"] = extract(line, i)
 
         # =========================
         # AGE
         # =========================
         elif "age" in l:
-            fields["age"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
+            fields["age"] = extract(line, i)
 
         # =========================
         # GENDER
         # =========================
         elif "gender" in l:
-            fields["gender"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
+            fields["gender"] = extract(line, i)
 
         # =========================
         # COUNTRY
         # =========================
         elif "country" in l:
-            fields["country"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
+            fields["country"] = extract(line, i)
 
     return {k: v.lower().strip() for k, v in fields.items() if v}
 
 # =========================
-# SEVERITY RULES
+# SEVERITY ENGINE
 # =========================
 def severity(field):
 
@@ -167,7 +169,7 @@ def severity(field):
     return "LOW"
 
 # =========================
-# COMPARE
+# COMPARE ENGINE
 # =========================
 def compare(qc, agent):
 
@@ -227,7 +229,6 @@ if qc_file and agent_file:
             st.success("No discrepancies detected")
         else:
             for r in results:
-
                 st.markdown(f"""
 ### {r['field']}
 
