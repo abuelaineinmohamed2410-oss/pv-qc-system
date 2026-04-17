@@ -8,7 +8,7 @@ from docx import Document
 st.set_page_config(page_title="PV QC System", layout="wide")
 
 st.title("Pharmacovigilance Control System")
-st.markdown("QC vs Agent – Pharma-grade structured mismatch detection")
+st.markdown("QC vs Agent – robust pharma-grade mismatch detection")
 
 # =========================
 # CLEAN TEXT
@@ -34,7 +34,7 @@ def read_pdf(file):
     return "\n".join(text)
 
 # =========================
-# DOCX READER (ROBUST)
+# DOCX READER (FIXED)
 # =========================
 def read_docx(file):
     doc = Document(file)
@@ -49,12 +49,12 @@ def read_docx(file):
     # tables
     for table in doc.tables:
         for row in table.rows:
-            row_text = []
+            row_cells = []
             for cell in row.cells:
                 if cell.text.strip():
-                    row_text.append(cell.text.strip())
-            if row_text:
-                text.append(" ".join(row_text))
+                    row_cells.append(cell.text.strip())
+            if row_cells:
+                text.append(" ".join(row_cells))
 
     return "\n".join(text)
 
@@ -67,39 +67,15 @@ def extract_text(file):
     return read_docx(file)
 
 # =========================
-# STRONG PV PARSER (FIXED FOR YOUR FORM)
+# SMART PV FIELD PARSER (FINAL FIX)
 # =========================
 def extract_fields(text):
 
     text = clean(text)
-
-    # normalize bullets
     text = text.replace("", "\n").replace("•", "\n")
 
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    # merge broken lines (VERY IMPORTANT FIX)
-    merged = []
-    i = 0
-
-    while i < len(lines):
-
-        line = lines[i]
-
-        if ":" in line and i + 1 < len(lines):
-
-            next_line = lines[i + 1]
-
-            # if next line is value (not a label)
-            if ":" not in next_line:
-                merged.append(line + " " + next_line)
-                i += 2
-                continue
-
-        merged.append(line)
-        i += 1
-
-    # final fields
     fields = {
         "drug": "",
         "dose": "",
@@ -112,53 +88,72 @@ def extract_fields(text):
         "country": ""
     }
 
-    def value(line):
-        if ":" in line:
-            return line.split(":", 1)[1].strip()
-        return ""
+    def get_value(i):
+        """
+        Collects value from same line or next lines (fix for broken Word/PDF)
+        """
+        line = lines[i]
 
-    for line in merged:
+        # same line value
+        if ":" in line:
+            value = line.split(":", 1)[1].strip()
+            if value:
+                return value
+
+        # multi-line value
+        value_parts = []
+        for j in range(i + 1, min(i + 4, len(lines))):
+            if ":" in lines[j]:
+                break
+            value_parts.append(lines[j])
+
+        return " ".join(value_parts).strip()
+
+    for i, line in enumerate(lines):
 
         l = line.lower()
 
+        # DRUG (CRITICAL FIX)
         if "product name" in l:
-            fields["drug"] = value(line)
+            fields["drug"] = get_value(i)
 
         elif "dose" in l:
-            fields["dose"] = value(line)
+            fields["dose"] = get_value(i)
 
         elif "indication" in l:
-            fields["indication"] = value(line)
+            fields["indication"] = get_value(i)
 
         elif "date reported" in l or "mrd" in l:
-            fields["mrd"] = value(line)
+            fields["mrd"] = get_value(i)
 
         elif "patient id" in l:
-            fields["patient_id"] = value(line)
+            fields["patient_id"] = get_value(i)
 
         elif "date of birth" in l:
-            fields["dob"] = value(line)
+            fields["dob"] = get_value(i)
 
         elif "age" in l:
-            fields["age"] = value(line)
+            fields["age"] = get_value(i)
 
         elif "gender" in l:
-            fields["gender"] = value(line)
+            fields["gender"] = get_value(i)
 
         elif "country" in l:
-            fields["country"] = value(line)
+            fields["country"] = get_value(i)
 
     return {k: v.lower().strip() for k, v in fields.items() if v}
 
 # =========================
-# SEVERITY RULES
+# SEVERITY ENGINE
 # =========================
 def severity(field):
 
     if field in ["mrd", "dob", "patient_id"]:
         return "HIGH"
+
     if field in ["drug", "dose", "indication"]:
         return "MODERATE"
+
     return "LOW"
 
 # =========================
@@ -168,7 +163,7 @@ def compare(qc, agent):
 
     results = []
 
-    keys = set(qc.keys()).union(agent.keys())
+    keys = set(qc.keys()).union(set(agent.keys()))
 
     for k in keys:
 
@@ -189,8 +184,8 @@ def compare(qc, agent):
 # =========================
 # UI
 # =========================
-qc_file = st.file_uploader("Upload QC File (PDF or DOCX)", type=["pdf", "docx"])
-agent_file = st.file_uploader("Upload Agent File (PDF or DOCX)", type=["pdf", "docx"])
+qc_file = st.file_uploader("Upload QC File (PDF / DOCX)", type=["pdf", "docx"])
+agent_file = st.file_uploader("Upload Agent File (PDF / DOCX)", type=["pdf", "docx"])
 
 if qc_file and agent_file:
 
