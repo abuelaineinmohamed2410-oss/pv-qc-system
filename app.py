@@ -2,11 +2,11 @@ import streamlit as st
 import pdfplumber
 import re
 
-st.set_page_config(page_title="PV Comparator", layout="wide")
-st.title("Pharmacovigilance QC vs Agent Comparator")
+st.set_page_config(page_title="PV QC Comparator", layout="wide")
+st.title("Pharmacovigilance QC vs Agent Comparator (Clean Engine)")
 
 # =========================
-# READ
+# READ PDF
 # =========================
 def read_pdf(file):
     text = ""
@@ -16,7 +16,7 @@ def read_pdf(file):
     return text.lower()
 
 # =========================
-# CLEAN
+# CLEAN TEXT
 # =========================
 def clean(text):
     text = text.lower()
@@ -27,100 +27,75 @@ def clean(text):
     return text
 
 # =========================
-# STRONG LABEL DETECTOR
+# LABEL MAP (IMPORTANT FIX)
 # =========================
-LABELS = [
-    "product name",
-    "dose",
-    "frequency",
-    "indication",
-    "start date",
-    "end date",
-    "date reported",
-    "gender",
-    "age",
-    "patient id",
-    "date of birth",
-    "country",
-    "adverse event"
-]
+FIELDS = {
+    "drug": "product name",
+    "dose": "dose",
+    "frequency": "frequency",
+    "indication": "indication",
+    "mrd": "date reported",
+    "dob": "date of birth",
+    "patient_id": "patient id",
+    "gender": "gender",
+    "country": "country",
+}
 
 # =========================
-# LINE-BASED PARSER (CORE FIX)
+# VALUE CLEANER (CRITICAL FIX)
+# =========================
+def clean_value(v):
+
+    v = v.strip()
+
+    # remove label contamination
+    v = re.sub(r"product information.*?:", "", v)
+    v = re.sub(r"indication.*?:", "", v)
+    v = re.sub(r"dose.*?:", "", v)
+
+    # remove repeated spaces
+    v = re.sub(r"\s+", " ", v)
+
+    return v.strip()
+
+# =========================
+# LABEL → VALUE PARSER (CORE FIX)
 # =========================
 def parse(text):
 
     text = clean(text)
-    lines = text.split(".")
 
-    data = {
-        "drug": [],
-        "dose": [],
-        "frequency": [],
-        "indication": [],
-        "mrd": [],
-        "dob": [],
-        "patient_id": [],
-        "gender": [],
-        "age": [],
-        "country": [],
-        "ae": []
-    }
+    data = {k: [] for k in FIELDS.keys()}
+    data["ae"] = []
 
-    current_label = None
+    # split by sentences / bullets
+    chunks = re.split(r"[•\.\n]", text)
 
-    for line in lines:
+    for i, chunk in enumerate(chunks):
 
-        line = line.strip()
-
-        if not line:
+        chunk = chunk.strip()
+        if not chunk:
             continue
 
-        # detect label
-        for l in LABELS:
-            if l in line:
-                current_label = l
+        for field, label in FIELDS.items():
 
-        # extract values safely
-        if "entresto" in line:
-            data["drug"].append(line.split("entresto")[0] + "entresto" + re.findall(r"\d+\s*mg", line)[0])
+            if label in chunk:
 
-        if "dose" in current_label and re.search(r"\d+\s*mg", line):
-            data["dose"].append(re.findall(r"\d+\s*mg", line)[0])
+                value = chunk.split(label)[-1]
 
-        if "frequency" in current_label:
-            if "twice" in line:
-                data["frequency"].append("twice daily")
-            if "once" in line:
-                data["frequency"].append("once daily")
+                value = clean_value(value)
 
-        if "indication" in current_label:
-            data["indication"].append(line.split(":")[-1].strip())
+                # store only clean value
+                if value and len(value) < 200:
+                    data[field].append(value)
 
-        if "date reported" in line:
-            data["mrd"].extend(re.findall(r"\d{1,2}-[a-z]{3}-\d{2,4}", line))
+        # AE detection (separate logic)
+        if "non compliance" in chunk or "stopping" in chunk or "off-label" in chunk:
+            data["ae"].append(chunk.strip())
 
-        if "birth" in line:
-            data["dob"].extend(re.findall(r"\d{1,2}-[a-z]{3}-\d{2,4}", line))
-
-        if "patient id" in line:
-            data["patient_id"].extend(re.findall(r"\d{4}-\d{4}-\d{4}-\d{6}", line))
-
-        if "age" in line:
-            data["age"].extend(re.findall(r"\d+", line))
-
-        if "male" in line or "female" in line:
-            data["gender"].append("male" if "male" in line else "female")
-
-        if "egypt" in line:
-            data["country"].append("egypt")
-
-        if "non compliance" in line or "stopping" in line or "off-label" in line:
-            data["ae"].append(line.strip())
-
-    # FINAL CLEANUP (CRITICAL)
+    # deduplicate
     for k in data:
-        data[k] = list(set([x.strip() for x in data[k] if x]))
+        data[k] = list(set(data[k]))
 
     return data
 
@@ -156,7 +131,7 @@ if qc_file and ag_file:
 
         res = compare(qc, ag)
 
-        st.subheader("MISMATCH REPORT (CLEAN)")
+        st.subheader("MISMATCH REPORT (CLEAN OUTPUT)")
 
         for k, v in res.items():
 
