@@ -101,7 +101,7 @@ def extract(text):
 
      # Action Taken Due to Side Effect
     data["Action Taken Due to Side Effect"] = extract_field(text, [
-        r"Action Taken Due to Side Effect[:\s]*([a-z\s])"
+        r"Action Taken Due to Side Effect[:\s]*([a-z\s]+)"
     ])
 
     # MRD
