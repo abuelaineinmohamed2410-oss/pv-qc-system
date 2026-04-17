@@ -2,8 +2,8 @@ import streamlit as st
 import pdfplumber
 import re
 
-st.set_page_config(page_title="PV QC Smart System", layout="wide")
-st.title("Pharmacovigilance QC System (Smart Matching Engine)")
+st.set_page_config(page_title="PV QC Smart Comparator", layout="wide")
+st.title("Pharmacovigilance Smart QC Comparator")
 
 # =========================
 # READ PDF
@@ -29,158 +29,125 @@ def norm(x):
     return x.strip()
 
 # =========================
-# SMART FIELD EXTRACTOR (ROBUST)
+# UNIVERSAL FACT EXTRACTOR
 # =========================
-def extract(text):
-
-    data = {
-        "drug": [],
-        "dose": [],
-        "frequency": [],
-        "indication": [],
-        "mrd": "",
-        "dob": "",
-        "patient_id": "",
-        "gender": "",
-        "age": "",
-        "country": "",
-        "ae": []
-    }
+def extract_facts(text):
 
     text = norm(text)
 
-    # -------- DRUG --------
-    drugs = re.findall(r"entresto\s*\d+\s*mg", text)
-    data["drug"] = list(set([norm(d) for d in drugs]))
+    facts = {
+        "drug": set(),
+        "dose": set(),
+        "frequency": set(),
+        "ae": set(),
+        "mrd": "",
+        "dob": "",
+        "patient_id": ""
+    }
 
-    # -------- DOSE --------
-    doses = re.findall(r"\d+\s*mg", text)
-    data["dose"] = list(set([norm(d) for d in doses]))
+    # DRUGS (robust multi-match)
+    facts["drug"] = set(re.findall(r"entresto\s*\d+\s*mg", text))
 
-    # -------- FREQUENCY --------
+    # DOSE (normalize all mg values)
+    facts["dose"] = set(re.findall(r"\d+\s*mg", text))
+
+    # FREQUENCY (semantic detection)
     if "once daily" in text or "once a day" in text:
-        data["frequency"].append("once daily")
+        facts["frequency"].add("once daily")
     if "twice daily" in text or "twice a day" in text:
-        data["frequency"].append("twice daily")
+        facts["frequency"].add("twice daily")
     if "other" in text:
-        data["frequency"].append("other")
+        facts["frequency"].add("other")
 
-    data["frequency"] = list(set(data["frequency"]))
+    # AE (semantic keywords)
+    ae_map = {
+        "non compliance": ["non compliance", "non-complaint"],
+        "stopping": ["stopped", "stop", "stopping"],
+        "off label": ["off-label", "off label"]
+    }
 
-    # -------- INDICATION --------
-    if "hf" in text or "heart failure" in text:
-        data["indication"].append("hf")
+    for key, variants in ae_map.items():
+        if any(v in text for v in variants):
+            facts["ae"].add(key)
 
-    # -------- MRD --------
+    # MRD (any date format)
     mrd = re.search(r"\d{1,2}-[a-z]{3}-\d{2,4}", text)
     if mrd:
-        data["mrd"] = mrd.group()
+        facts["mrd"] = mrd.group()
 
-    # -------- DOB --------
+    # DOB
     dob = re.search(r"\d{1,2}-[a-z]{3}-\d{2,4}", text)
     if dob:
-        data["dob"] = dob.group()
+        facts["dob"] = dob.group()
 
-    # -------- PATIENT ID --------
+    # PATIENT ID
     pid = re.search(r"\d{4}-\d{4}-\d{4}-\d{6}", text)
     if pid:
-        data["patient_id"] = pid.group()
+        facts["patient_id"] = pid.group()
 
-    # -------- GENDER --------
-    if "male" in text:
-        data["gender"] = "male"
-    elif "female" in text:
-        data["gender"] = "female"
-
-    # -------- AGE --------
-    age = re.search(r"\d+\s*years", text)
-    if age:
-        data["age"] = age.group()
-
-    # -------- COUNTRY --------
-    if "egypt" in text:
-        data["country"] = "egypt"
-
-    # -------- AE --------
-    ae_keywords = [
-        "non compliance",
-        "stopping",
-        "off-label",
-        "off label",
-        "adverse event"
-    ]
-
-    data["ae"] = [k for k in ae_keywords if k in text]
-
-    return data
+    return facts
 
 # =========================
-# SMART COMPARATOR (CORE FIX)
+# SMART COMPARISON ENGINE
 # =========================
-def smart_compare(qc, agent):
+def compare(qc, ag):
 
-    results = []
+    report = []
 
-    def diff(field, a, b):
+    def diff(name, a, b):
 
-        a_set = set(a) if isinstance(a, list) else {a}
-        b_set = set(b) if isinstance(b, list) else {b}
+        if isinstance(a, set) or isinstance(b, set):
+            if set(a) != set(b):
+                return True
+        else:
+            if a != b:
+                return True
 
-        return a_set != b_set
+        return False
 
-    mapping = [
-        "drug", "dose", "frequency", "indication",
-        "mrd", "dob", "patient_id", "gender", "age", "country"
-    ]
+    # compare fields
+    fields = ["drug", "dose", "frequency", "ae", "mrd", "dob", "patient_id"]
 
-    for f in mapping:
-        if diff(f, qc.get(f, []), agent.get(f, [])):
-            results.append({
+    for f in fields:
+        if diff(f, qc.get(f), ag.get(f)):
+            report.append({
                 "field": f.upper(),
                 "qc": qc.get(f),
-                "agent": agent.get(f)
+                "agent": ag.get(f)
             })
 
-    # AE separately
-    if set(qc.get("ae", [])) != set(agent.get("ae", [])):
-        results.append({
-            "field": "ADVERSE EVENTS",
-            "qc": qc.get("ae"),
-            "agent": agent.get("ae")
-        })
-
-    return results
+    return report
 
 # =========================
 # UI
 # =========================
 qc_file = st.file_uploader("Upload QC PDF", type=["pdf"])
-agent_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
+ag_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
 
-if qc_file and agent_file:
+if qc_file and ag_file:
 
     qc_text = read_pdf(qc_file)
-    agent_text = read_pdf(agent_file)
+    ag_text = read_pdf(ag_file)
 
-    qc = extract(qc_text)
-    agent = extract(agent_text)
+    qc = extract_facts(qc_text)
+    ag = extract_facts(ag_text)
 
-    if st.button("Run QC Validation"):
+    if st.button("Run Smart Comparison"):
 
-        results = smart_compare(qc, agent)
+        result = compare(qc, ag)
 
-        st.subheader("Mismatch Report")
+        st.subheader("Mismatch Report (Smart Structured Output)")
 
-        if not results:
+        if not result:
             st.success("No discrepancies detected")
         else:
-            for r in results:
+            for r in result:
 
                 st.markdown(f"""
 ### {r['field']}
 
-QC: `{r['qc']}`  
-Agent: `{r['agent']}`
+QC: `{sorted(list(r['qc'])) if isinstance(r['qc'], set) else r['qc']}`  
+Agent: `{sorted(list(r['agent'])) if isinstance(r['agent'], set) else r['agent']}`
 
 ---
 """)
