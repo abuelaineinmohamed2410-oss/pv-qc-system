@@ -6,8 +6,8 @@ import re
 # PAGE CONFIG
 # =========================
 st.set_page_config(page_title="PV QC System", layout="wide")
-st.title("Pharmacovigilance QC System")
-st.caption("Structured QC vs Agent discrepancy detection")
+st.title("PV Mismatch Checker")
+st.caption("If Your Fearing of Misisng a Case, You should Try Me...")
 
 # =========================
 # PDF READER
@@ -174,7 +174,7 @@ if qc_file and agent_file:
 
         diffs = compare(qc_data, agent_data)
 
-        st.subheader("STRUCTURED MISMATCH REPORT")
+        st.subheader("Now let's see what you have missed", "I will not notify anyone...")
 
         if not diffs:
             st.success("No discrepancies detected")
