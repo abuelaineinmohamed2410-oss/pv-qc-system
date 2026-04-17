@@ -1,15 +1,14 @@
 import streamlit as st
 import pdfplumber
 from docx import Document
-import re
 
 # =========================
-# APP CONFIG
+# CONFIG
 # =========================
 st.set_page_config(page_title="PV QC System", layout="wide")
 
 st.title("Pharmacovigilance Control System")
-st.markdown("QC vs Agent comparison (Word + PDF pharma-grade validation)")
+st.markdown("QC vs Agent comparison (Word + PDF structured PV validation)")
 
 # =========================
 # CLEAN TEXT
@@ -33,32 +32,32 @@ def read_pdf(file):
     return text
 
 # =========================
-# WORD READER (FIXED - IMPORTANT)
+# DOCX READER (FIXED)
 # =========================
 def read_docx(file):
     doc = Document(file)
 
-    text_parts = []
+    lines = []
 
     # paragraphs
     for p in doc.paragraphs:
         if p.text.strip():
-            text_parts.append(p.text)
+            lines.append(p.text)
 
-    # tables (VERY IMPORTANT FOR PV FORMS)
+    # tables (IMPORTANT)
     for table in doc.tables:
         for row in table.rows:
-            row_data = []
+            row_text = []
             for cell in row.cells:
                 if cell.text.strip():
-                    row_data.append(cell.text.strip())
-            if row_data:
-                text_parts.append(" | ".join(row_data))
+                    row_text.append(cell.text.strip())
+            if row_text:
+                lines.append(" | ".join(row_text))
 
-    return "\n".join(text_parts)
+    return "\n".join(lines)
 
 # =========================
-# UNIVERSAL FILE HANDLER
+# FILE HANDLER
 # =========================
 def extract_text(file):
     if file.name.lower().endswith(".pdf"):
@@ -66,28 +65,63 @@ def extract_text(file):
     return read_docx(file)
 
 # =========================
-# FIELD EXTRACTION (PHARMA STRUCTURE)
+# FIELD EXTRACTION (ROBUST PV PARSER)
 # =========================
 def extract_fields(text):
 
     text = clean_text(text)
 
-    def find(pattern):
-        m = re.search(pattern, text, re.IGNORECASE)
-        return m.group(1).strip() if m else ""
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     fields = {
-        "drug": find(r"Product Name.*?:\s*(.+)"),
-        "dose": find(r"Dose\s*:\s*(.+)"),
-        "indication": find(r"Indication\s*:\s*(.+)"),
-        "mrd": find(r"Date Reported.*?:\s*(.+)"),
-        "patient_id": find(r"Patient ID.*?:\s*(.+)"),
-        "dob": find(r"Date of Birth\s*:\s*(.+)"),
-        "age": find(r"Age.*?:\s*(.+)"),
-        "gender": find(r"Gender\s*:\s*(.+)"),
-        "country": find(r"Country.*?:\s*(.+)")
+        "drug": "",
+        "dose": "",
+        "indication": "",
+        "mrd": "",
+        "patient_id": "",
+        "dob": "",
+        "age": "",
+        "gender": "",
+        "country": ""
     }
 
+    def value(line):
+        if ":" in line:
+            return line.split(":", 1)[1].strip()
+        return ""
+
+    for line in lines:
+
+        l = line.lower()
+
+        if "product name" in l:
+            fields["drug"] = value(line)
+
+        elif "dose" in l:
+            fields["dose"] = value(line)
+
+        elif "indication" in l:
+            fields["indication"] = value(line)
+
+        elif "date reported" in l or "mrd" in l:
+            fields["mrd"] = value(line)
+
+        elif "patient id" in l:
+            fields["patient_id"] = value(line)
+
+        elif "date of birth" in l:
+            fields["dob"] = value(line)
+
+        elif "age" in l:
+            fields["age"] = value(line)
+
+        elif "gender" in l:
+            fields["gender"] = value(line)
+
+        elif "country" in l:
+            fields["country"] = value(line)
+
+    # normalize
     return {k: v.lower().strip() for k, v in fields.items() if v}
 
 # =========================
@@ -104,13 +138,13 @@ def severity(field):
     return "LOW"
 
 # =========================
-# COMPARISON ENGINE
+# COMPARE ENGINE
 # =========================
 def compare(qc, agent):
 
     results = []
 
-    keys = set(qc.keys()).union(agent.keys())
+    keys = set(qc.keys()).union(set(agent.keys()))
 
     for k in keys:
 
@@ -142,12 +176,11 @@ if qc_file and agent_file:
     qc_data = extract_fields(qc_text)
     agent_data = extract_fields(agent_text)
 
-    # DEBUG (REMOVE LATER IF NOT NEEDED)
-    with st.expander("QC Extracted Data"):
-        st.write(qc_data)
+    st.subheader("Debug - QC Extracted Data")
+    st.json(qc_data)
 
-    with st.expander("Agent Extracted Data"):
-        st.write(agent_data)
+    st.subheader("Debug - Agent Extracted Data")
+    st.json(agent_data)
 
     if st.button("Run QC Validation"):
 
@@ -159,7 +192,6 @@ if qc_file and agent_file:
             st.success("No discrepancies detected")
         else:
             for r in results:
-
                 st.markdown(f"""
 ### {r['field']}
 
