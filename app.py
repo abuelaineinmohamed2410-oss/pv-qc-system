@@ -4,36 +4,15 @@ from docx import Document
 import re
 
 # =========================
-# PAGE CONFIG
+# CONFIG
 # =========================
 st.set_page_config(page_title="PV QC System", layout="wide")
 
 st.title("Pharmacovigilance Control System")
-st.markdown("QC vs Agent comparison (pharma-grade structured mismatch detection)")
+st.markdown("QC vs Agent comparison (structured pharma-grade validation)")
 
 # =========================
-# FILE READERS
-# =========================
-def read_pdf(file):
-    text = ""
-    with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
-            text += page.extract_text() or ""
-    return text
-
-
-def read_docx(file):
-    doc = Document(file)
-    return "\n".join([p.text for p in doc.paragraphs])
-
-
-def extract_text(file):
-    if file.name.lower().endswith(".pdf"):
-        return read_pdf(file)
-    return read_docx(file)
-
-# =========================
-# CLEAN TEXT (IMPORTANT FIX)
+# CLEAN TEXT
 # =========================
 def clean_text(text):
     text = text.replace("\xa0", " ")
@@ -42,66 +21,71 @@ def clean_text(text):
     return text
 
 # =========================
+# READ PDF
+# =========================
+def read_pdf(file):
+    text = ""
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() or ""
+    return text
+
+# =========================
+# READ DOCX (FIXED - IMPORTANT)
+# =========================
+def read_docx(file):
+    doc = Document(file)
+
+    text = []
+
+    # paragraphs
+    for p in doc.paragraphs:
+        text.append(p.text)
+
+    # tables (CRITICAL FIX)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                text.append(cell.text)
+
+    return "\n".join(text)
+
+# =========================
+# EXTRACT TEXT
+# =========================
+def extract_text(file):
+    if file.name.lower().endswith(".pdf"):
+        return read_pdf(file)
+    return read_docx(file)
+
+# =========================
 # FIELD EXTRACTION (ROBUST)
 # =========================
 def extract_fields(text):
 
     text = clean_text(text)
 
+    def find(pattern):
+        m = re.search(pattern, text, re.IGNORECASE)
+        return m.group(1).strip() if m else ""
+
     fields = {
-        "drug": "",
-        "dose": "",
-        "indication": "",
-        "mrd": "",
-        "patient_id": "",
-        "dob": "",
-        "age": "",
-        "gender": "",
-        "country": ""
+        "drug": find(r"Product Name.*?:\s*(.+)"),
+        "dose": find(r"Dose\s*:\s*(.+)"),
+        "indication": find(r"Indication\s*:\s*(.+)"),
+        "mrd": find(r"Date Reported.*?:\s*(.+)"),
+        "patient_id": find(r"Patient ID.*?:\s*(.+)"),
+        "dob": find(r"Date of Birth\s*:\s*(.+)"),
+        "age": find(r"Age.*?:\s*(.+)"),
+        "gender": find(r"Gender\s*:\s*(.+)"),
+        "country": find(r"Country.*?:\s*(.+)")
     }
-
-    lines = text.split("\n")
-
-    def get_value(line):
-        if ":" in line:
-            return line.split(":", 1)[1].strip()
-        return ""
-
-    for line in lines:
-        l = line.lower()
-
-        if "product name" in l:
-            fields["drug"] = get_value(line)
-
-        elif "dose" in l:
-            fields["dose"] = get_value(line)
-
-        elif "indication" in l:
-            fields["indication"] = get_value(line)
-
-        elif "date reported" in l or "mrd" in l:
-            fields["mrd"] = get_value(line)
-
-        elif "patient id" in l:
-            fields["patient_id"] = get_value(line)
-
-        elif "date of birth" in l:
-            fields["dob"] = get_value(line)
-
-        elif "age" in l:
-            fields["age"] = get_value(line)
-
-        elif "gender" in l:
-            fields["gender"] = get_value(line)
-
-        elif "country" in l:
-            fields["country"] = get_value(line)
 
     # normalize
     return {k: v.lower().strip() for k, v in fields.items() if v}
 
 # =========================
-# SEVERITY ENGINE
+# SEVERITY
 # =========================
 def severity(field):
 
@@ -114,7 +98,7 @@ def severity(field):
     return "LOW"
 
 # =========================
-# COMPARISON ENGINE
+# COMPARE ENGINE
 # =========================
 def compare(qc, agent):
 
@@ -152,6 +136,13 @@ if qc_file and agent_file:
     qc_data = extract_fields(qc_text)
     agent_data = extract_fields(agent_text)
 
+    # DEBUG (REMOVE LATER IF YOU WANT)
+    with st.expander("Debug - QC Extracted Data"):
+        st.write(qc_data)
+
+    with st.expander("Debug - Agent Extracted Data"):
+        st.write(agent_data)
+
     if st.button("Run QC Validation"):
 
         results = compare(qc_data, agent_data)
@@ -159,8 +150,9 @@ if qc_file and agent_file:
         st.subheader("Mismatch Report")
 
         if not results:
-            st.success("No discrepancies detected")
+            st.error("No discrepancies detected (check extracted data)")
         else:
+
             for r in results:
 
                 st.markdown(f"""
