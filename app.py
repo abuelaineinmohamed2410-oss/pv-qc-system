@@ -8,7 +8,7 @@ from docx import Document
 st.set_page_config(page_title="PV QC System", layout="wide")
 
 st.title("Pharmacovigilance Control System")
-st.markdown("QC vs Agent - robust pharma-grade comparison")
+st.markdown("QC vs Agent – Pharma-grade structured mismatch detection")
 
 # =========================
 # CLEAN TEXT
@@ -22,19 +22,19 @@ def clean(text):
     return text
 
 # =========================
-# PDF (IMPROVED)
+# PDF READER
 # =========================
 def read_pdf(file):
     text = []
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                text.append(t)
+            page_text = page.extract_text()
+            if page_text:
+                text.append(page_text)
     return "\n".join(text)
 
 # =========================
-# DOCX (STABLE METHOD)
+# DOCX READER (ROBUST)
 # =========================
 def read_docx(file):
     doc = Document(file)
@@ -59,7 +59,7 @@ def read_docx(file):
     return "\n".join(text)
 
 # =========================
-# EXTRACT TEXT
+# FILE HANDLER
 # =========================
 def extract_text(file):
     if file.name.lower().endswith(".pdf"):
@@ -67,14 +67,39 @@ def extract_text(file):
     return read_docx(file)
 
 # =========================
-# SMART FIELD PARSER (FIX)
+# STRONG PV PARSER (FIXED FOR YOUR FORM)
 # =========================
 def extract_fields(text):
 
     text = clean(text)
 
+    # normalize bullets
+    text = text.replace("", "\n").replace("•", "\n")
+
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
+    # merge broken lines (VERY IMPORTANT FIX)
+    merged = []
+    i = 0
+
+    while i < len(lines):
+
+        line = lines[i]
+
+        if ":" in line and i + 1 < len(lines):
+
+            next_line = lines[i + 1]
+
+            # if next line is value (not a label)
+            if ":" not in next_line:
+                merged.append(line + " " + next_line)
+                i += 2
+                continue
+
+        merged.append(line)
+        i += 1
+
+    # final fields
     fields = {
         "drug": "",
         "dose": "",
@@ -87,50 +112,46 @@ def extract_fields(text):
         "country": ""
     }
 
-    current_key = None
+    def value(line):
+        if ":" in line:
+            return line.split(":", 1)[1].strip()
+        return ""
 
-    for line in lines:
+    for line in merged:
 
         l = line.lower()
 
-        # detect label
         if "product name" in l:
-            current_key = "drug"
-            continue
-        elif "dose" in l:
-            current_key = "dose"
-            continue
-        elif "indication" in l:
-            current_key = "indication"
-            continue
-        elif "date reported" in l or "mrd" in l:
-            current_key = "mrd"
-            continue
-        elif "patient id" in l:
-            current_key = "patient_id"
-            continue
-        elif "date of birth" in l:
-            current_key = "dob"
-            continue
-        elif "age" in l:
-            current_key = "age"
-            continue
-        elif "gender" in l:
-            current_key = "gender"
-            continue
-        elif "country" in l:
-            current_key = "country"
-            continue
+            fields["drug"] = value(line)
 
-        # value capture (IMPORTANT FIX)
-        if current_key and ":" not in line:
-            if fields[current_key] == "":
-                fields[current_key] = line.strip()
+        elif "dose" in l:
+            fields["dose"] = value(line)
+
+        elif "indication" in l:
+            fields["indication"] = value(line)
+
+        elif "date reported" in l or "mrd" in l:
+            fields["mrd"] = value(line)
+
+        elif "patient id" in l:
+            fields["patient_id"] = value(line)
+
+        elif "date of birth" in l:
+            fields["dob"] = value(line)
+
+        elif "age" in l:
+            fields["age"] = value(line)
+
+        elif "gender" in l:
+            fields["gender"] = value(line)
+
+        elif "country" in l:
+            fields["country"] = value(line)
 
     return {k: v.lower().strip() for k, v in fields.items() if v}
 
 # =========================
-# SEVERITY
+# SEVERITY RULES
 # =========================
 def severity(field):
 
@@ -141,7 +162,7 @@ def severity(field):
     return "LOW"
 
 # =========================
-# COMPARE
+# COMPARE ENGINE
 # =========================
 def compare(qc, agent):
 
@@ -168,44 +189,45 @@ def compare(qc, agent):
 # =========================
 # UI
 # =========================
-qc_file = st.file_uploader("Upload QC File", type=["pdf", "docx"])
-agent_file = st.file_uploader("Upload Agent File", type=["pdf", "docx"])
+qc_file = st.file_uploader("Upload QC File (PDF or DOCX)", type=["pdf", "docx"])
+agent_file = st.file_uploader("Upload Agent File (PDF or DOCX)", type=["pdf", "docx"])
 
 if qc_file and agent_file:
 
     qc_text = extract_text(qc_file)
     agent_text = extract_text(agent_file)
 
-    st.subheader("DEBUG QC RAW TEXT")
-    st.text_area("QC TEXT", qc_text, height=200)
+    st.subheader("Raw QC Text")
+    st.text_area("", qc_text, height=200)
 
-    st.subheader("DEBUG AGENT RAW TEXT")
-    st.text_area("AGENT TEXT", agent_text, height=200)
+    st.subheader("Raw Agent Text")
+    st.text_area("", agent_text, height=200)
 
     qc_data = extract_fields(qc_text)
     agent_data = extract_fields(agent_text)
 
-    st.subheader("QC Extracted")
+    st.subheader("QC Extracted Data")
     st.json(qc_data)
 
-    st.subheader("Agent Extracted")
+    st.subheader("Agent Extracted Data")
     st.json(agent_data)
 
-    if st.button("Run QC Check"):
+    if st.button("Run QC Validation"):
 
         results = compare(qc_data, agent_data)
 
         st.subheader("Mismatch Report")
 
         if not results:
-            st.error("No discrepancies detected")
+            st.success("No discrepancies detected")
         else:
             for r in results:
+
                 st.markdown(f"""
 ### {r['field']}
 
-QC: **{r['qc']}**  
-Agent: **{r['agent']}**  
+QC Value: **{r['qc']}**  
+Agent Value: **{r['agent']}**  
 Severity: **{r['severity']}**
 
 ---
