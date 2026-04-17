@@ -1,9 +1,10 @@
 import streamlit as st
 import pdfplumber
 import re
+from collections import defaultdict
 
-st.set_page_config(page_title="PV QC Comparator", layout="wide")
-st.title("Pharmacovigilance QC vs Agent Comparator (Clean Mode)")
+st.set_page_config(page_title="PV Structured Comparator", layout="wide")
+st.title("Pharmacovigilance Structured QC vs Agent Comparator")
 
 # =========================
 # READ PDF
@@ -16,168 +17,149 @@ def read_pdf(file):
     return text.lower()
 
 # =========================
-# CLEAN TEXT (CRITICAL FIX)
+# CLEAN TEXT
 # =========================
 def clean(text):
-
     text = text.lower()
-
-    # remove bullets & weird chars
-    text = text.replace("", " ")
-    text = text.replace("•", " ")
-    text = text.replace("\uf0b7", " ")
-
-    # normalize spaces
+    text = text.replace("", " ").replace("•", " ").replace("\uf0b7", " ")
     text = re.sub(r"\s+", " ", text)
-
     return text
 
 # =========================
-# SECTION SPLITTER (KEY FIX)
+# SPLIT DRUG BLOCKS (CRITICAL FIX)
 # =========================
-SECTION_KEYS = {
-    "product": ["product information", "products"],
-    "ae": ["adverse event"],
-    "patient": ["patient information", "patient details"],
-    "contact": ["contact information"]
-}
+def extract_drug_blocks(text):
 
-def split_sections(text):
+    # split by product name occurrence
+    blocks = re.split(r"(entresto\s*\d+\s*mg)", text)
 
-    sections = {}
-    current = "general"
-    sections[current] = ""
+    drugs = []
 
-    for line in text.split("\n"):
+    for i in range(1, len(blocks), 2):
+        name = blocks[i].strip()
+        content = blocks[i+1] if i+1 < len(blocks) else ""
 
-        line_low = line.lower()
+        drugs.append((name, content))
 
-        found = False
-        for sec, keys in SECTION_KEYS.items():
-            if any(k in line_low for k in keys):
-                current = sec
-                sections.setdefault(current, "")
-                found = True
-                break
-
-        sections[current] += " " + line_low
-
-    return sections
+    return drugs
 
 # =========================
-# FIELD EXTRACTION (SAFE)
+# EXTRACT DRUG INFO
 # =========================
-def extract_field(section_text, patterns):
+def parse_drug(name, block):
 
-    values = []
+    data = {
+        "drug": name,
+        "dose": "",
+        "frequency": "",
+        "indication": "",
+        "mrd": "",
+    }
 
-    for p in patterns:
-        matches = re.findall(p, section_text)
-        values.extend(matches)
+    # dose
+    dose = re.findall(r"\d+\s*mg", block)
+    if dose:
+        data["dose"] = dose[0]
 
-    return list(set([v.strip() for v in values if v]))
+    # frequency
+    if "twice" in block:
+        data["frequency"] = "twice daily"
+    elif "once" in block:
+        data["frequency"] = "once daily"
+
+    # indication
+    ind = re.findall(r"indication.*?:\s*([a-z ]+)", block)
+    if ind:
+        data["indication"] = ind[0].strip()
+
+    return data
 
 # =========================
-# PARSER (FIXED LOGIC)
+# PATIENT INFO
+# =========================
+def extract_patient(text):
+
+    patient = {}
+
+    patient["age"] = re.findall(r"\d+\s*years", text)
+    patient["dob"] = re.findall(r"\d{1,2}-[a-z]{3}-\d{2,4}", text)
+    patient["gender"] = ["male"] if "male" in text else ["female"] if "female" in text else []
+    patient["patient_id"] = re.findall(r"\d{4}-\d{4}-\d{4}-\d{6}", text)
+    patient["country"] = ["egypt"] if "egypt" in text else []
+
+    return patient
+
+# =========================
+# AE EXTRACTION
+# =========================
+def extract_ae(text):
+
+    ae_keywords = ["non compliance", "stopping", "off-label", "off label"]
+
+    aes = []
+
+    for a in ae_keywords:
+        if a in text:
+            aes.append(a)
+
+    return list(set(aes))
+
+# =========================
+# MAIN PARSER
 # =========================
 def parse(text):
 
     text = clean(text)
-    sections = split_sections(text)
 
-    data = {
-        "drug": [],
-        "dose": [],
-        "frequency": [],
-        "mrd": [],
-        "dob": [],
-        "patient_id": [],
-        "gender": [],
-        "age": [],
-        "country": [],
-        "ae": []
+    # DRUGS
+    drug_blocks = extract_drug_blocks(text)
+
+    drugs = []
+    for name, block in drug_blocks:
+        drugs.append(parse_drug(name, block))
+
+    # PATIENT
+    patient = extract_patient(text)
+
+    # AE
+    ae = extract_ae(text)
+
+    return {
+        "drugs": drugs,
+        "patient": patient,
+        "ae": ae
     }
-
-    product_text = sections.get("product", "")
-    patient_text = sections.get("patient", "")
-    contact_text = sections.get("contact", "")
-    ae_text = sections.get("ae", "")
-
-    # ================= DRUG =================
-    data["drug"] = re.findall(r"entresto\s*\d+\s*mg", product_text)
-
-    # ================= DOSE =================
-    data["dose"] = re.findall(r"\d+\s*mg", product_text + " " + ae_text)
-
-    # ================= FREQUENCY =================
-    if "once" in product_text:
-        data["frequency"].append("once daily")
-    if "twice" in product_text:
-        data["frequency"].append("twice daily")
-
-    # ================= MRD (STRICT FROM CONTACT ONLY) =================
-    mrd = re.findall(r"\d{1,2}-[a-z]{3}-\d{2,4}", contact_text)
-    data["mrd"] = mrd
-
-    # ================= DOB (STRICT FROM PATIENT ONLY) =================
-    dob = re.findall(r"\d{1,2}-[a-z]{3}-\d{2,4}", patient_text)
-    data["dob"] = dob
-
-    # ================= PATIENT ID =================
-    pid = re.findall(r"\d{4}-\d{4}-\d{4}-\d{6}", patient_text)
-    data["patient_id"] = pid
-
-    # ================= AGE =================
-    age = re.findall(r"\d+\s*years", patient_text)
-    data["age"] = age
-
-    # ================= GENDER =================
-    if "male" in patient_text:
-        data["gender"].append("male")
-    if "female" in patient_text:
-        data["gender"].append("female")
-
-    # ================= COUNTRY =================
-    if "egypt" in contact_text:
-        data["country"].append("egypt")
-
-    # ================= AE =================
-    ae_map = ["non compliance", "stopping", "off-label"]
-    for a in ae_map:
-        if a in ae_text:
-            data["ae"].append(a)
-
-    # CLEAN FINAL
-    for k in data:
-        data[k] = list(set([x.strip() for x in data[k] if x]))
-
-    return data
 
 # =========================
 # COMPARE
 # =========================
 def compare(qc, ag):
 
-    results = []
+    report = {"drug_mismatch": [], "patient_mismatch": [], "ae_mismatch": []}
 
-    keys = set(qc.keys()).union(set(ag.keys()))
+    # DRUG comparison
+    for i in range(max(len(qc["drugs"]), len(ag["drugs"]))):
 
-    for k in keys:
+        if i >= len(qc["drugs"]) or i >= len(ag["drugs"]):
+            report["drug_mismatch"].append((qc["drugs"][i] if i < len(qc["drugs"]) else None,
+                                            ag["drugs"][i] if i < len(ag["drugs"]) else None))
+            continue
 
-        qc_v = set(qc.get(k, []))
-        ag_v = set(ag.get(k, []))
+        q = qc["drugs"][i]
+        a = ag["drugs"][i]
 
-        qc_v.discard("")
-        ag_v.discard("")
+        if q != a:
+            report["drug_mismatch"].append((q, a))
 
-        if qc_v != ag_v:
-            results.append({
-                "field": k.upper(),
-                "qc": sorted(list(qc_v)),
-                "agent": sorted(list(ag_v))
-            })
+    # PATIENT
+    if qc["patient"] != ag["patient"]:
+        report["patient_mismatch"] = (qc["patient"], ag["patient"])
 
-    return results
+    # AE
+    if set(qc["ae"]) != set(ag["ae"]):
+        report["ae_mismatch"] = (qc["ae"], ag["ae"])
+
+    return report
 
 # =========================
 # UI
@@ -187,25 +169,28 @@ ag_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
 
 if qc_file and ag_file:
 
-    qc_text = read_pdf(qc_file)
-    ag_text = read_pdf(ag_file)
+    qc = parse(read_pdf(qc_file))
+    ag = parse(read_pdf(ag_file))
 
-    qc = parse(qc_text)
-    ag = parse(ag_text)
-
-    if st.button("Run Comparison"):
+    if st.button("Run Structured Comparison"):
 
         res = compare(qc, ag)
 
-        if not res:
-            st.success("No discrepancies detected")
-        else:
-            for r in res:
-                st.markdown(f"""
-### {r['field']}
+        st.subheader("STRUCTURED MISMATCH REPORT")
 
-QC: `{r['qc']}`  
-Agent: `{r['agent']}`
-
----
+        # DRUGS
+        st.markdown("## DRUGS")
+        for i, (q, a) in enumerate(res["drug_mismatch"]):
+            st.markdown(f"""
+### Drug {i+1}
+**QC:** {q}
+**Agent:** {a}
 """)
+
+        # PATIENT
+        st.markdown("## PATIENT")
+        st.write(res["patient_mismatch"])
+
+        # AE
+        st.markdown("## ADVERSE EVENTS")
+        st.write(res["ae_mismatch"])
