@@ -1,14 +1,14 @@
 import streamlit as st
 import pdfplumber
-from docx import Document
+import re
 
 # =========================
 # CONFIG
 # =========================
-st.set_page_config(page_title="PV QC System", layout="wide")
+st.set_page_config(page_title="PV QC PDF System", layout="wide")
 
-st.title("Pharmacovigilance Control System")
-st.markdown("QC vs Agent – robust pharma-grade mismatch detection")
+st.title("Pharmacovigilance Control System (PDF Only)")
+st.markdown("QC vs Agent - structured pharma-grade mismatch detection")
 
 # =========================
 # CLEAN TEXT
@@ -34,47 +34,36 @@ def read_pdf(file):
     return "\n".join(text)
 
 # =========================
-# DOCX READER (FIXED)
+# EXTRACT VALUE (ROBUST)
 # =========================
-def read_docx(file):
-    doc = Document(file)
+def extract_value_forward(lines, i):
 
-    text = []
+    for j in range(i + 1, min(i + 6, len(lines))):
 
-    # paragraphs
-    for p in doc.paragraphs:
-        if p.text.strip():
-            text.append(p.text.strip())
+        line = lines[j]
 
-    # tables
-    for table in doc.tables:
-        for row in table.rows:
-            row_cells = []
-            for cell in row.cells:
-                if cell.text.strip():
-                    row_cells.append(cell.text.strip())
-            if row_cells:
-                text.append(" ".join(row_cells))
+        if not line:
+            continue
 
-    return "\n".join(text)
+        # stop if new label starts
+        if ":" in line and len(line.split(":")[0]) < 40:
+            break
+
+        if "click or tap" in line.lower():
+            continue
+
+        return line.strip()
+
+    return ""
 
 # =========================
-# FILE HANDLER
-# =========================
-def extract_text(file):
-    if file.name.lower().endswith(".pdf"):
-        return read_pdf(file)
-    return read_docx(file)
-
-# =========================
-# SMART PV FIELD PARSER (FINAL FIX)
+# PV FIELD EXTRACTION
 # =========================
 def extract_fields(text):
 
     text = clean(text)
-    text = text.replace("", "\n").replace("•", "\n")
 
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    lines = [re.sub(r"\s+", " ", l.strip()) for l in text.split("\n") if l.strip()]
 
     fields = {
         "drug": "",
@@ -88,76 +77,97 @@ def extract_fields(text):
         "country": ""
     }
 
-    def get_value(i):
-        """
-        Collects value from same line or next lines (fix for broken Word/PDF)
-        """
-        line = lines[i]
-
-        # same line value
-        if ":" in line:
-            value = line.split(":", 1)[1].strip()
-            if value:
-                return value
-
-        # multi-line value
-        value_parts = []
-        for j in range(i + 1, min(i + 4, len(lines))):
-            if ":" in lines[j]:
-                break
-            value_parts.append(lines[j])
-
-        return " ".join(value_parts).strip()
-
     for i, line in enumerate(lines):
 
         l = line.lower()
 
-        # DRUG (CRITICAL FIX)
+        # =========================
+        # DRUG (CRITICAL)
+        # =========================
         if "product name" in l:
-            fields["drug"] = get_value(i)
 
+            if ":" in line:
+                val = line.split(":", 1)[1].strip()
+                if val:
+                    fields["drug"] = val
+                else:
+                    fields["drug"] = extract_value_forward(lines, i)
+            else:
+                fields["drug"] = extract_value_forward(lines, i)
+
+        # =========================
+        # DOSE
+        # =========================
         elif "dose" in l:
-            fields["dose"] = get_value(i)
 
+            if ":" in line:
+                val = line.split(":", 1)[1].strip()
+                fields["dose"] = val if val else extract_value_forward(lines, i)
+            else:
+                fields["dose"] = extract_value_forward(lines, i)
+
+        # =========================
+        # INDICATION
+        # =========================
         elif "indication" in l:
-            fields["indication"] = get_value(i)
 
+            if ":" in line:
+                val = line.split(":", 1)[1].strip()
+                fields["indication"] = val if val else extract_value_forward(lines, i)
+            else:
+                fields["indication"] = extract_value_forward(lines, i)
+
+        # =========================
+        # MRD
+        # =========================
         elif "date reported" in l or "mrd" in l:
-            fields["mrd"] = get_value(i)
+            fields["mrd"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
 
+        # =========================
+        # PATIENT ID
+        # =========================
         elif "patient id" in l:
-            fields["patient_id"] = get_value(i)
+            fields["patient_id"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
 
+        # =========================
+        # DOB
+        # =========================
         elif "date of birth" in l:
-            fields["dob"] = get_value(i)
+            fields["dob"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
 
+        # =========================
+        # AGE
+        # =========================
         elif "age" in l:
-            fields["age"] = get_value(i)
+            fields["age"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
 
+        # =========================
+        # GENDER
+        # =========================
         elif "gender" in l:
-            fields["gender"] = get_value(i)
+            fields["gender"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
 
+        # =========================
+        # COUNTRY
+        # =========================
         elif "country" in l:
-            fields["country"] = get_value(i)
+            fields["country"] = line.split(":", 1)[1].strip() if ":" in line else extract_value_forward(lines, i)
 
     return {k: v.lower().strip() for k, v in fields.items() if v}
 
 # =========================
-# SEVERITY ENGINE
+# SEVERITY RULES
 # =========================
 def severity(field):
 
     if field in ["mrd", "dob", "patient_id"]:
         return "HIGH"
-
     if field in ["drug", "dose", "indication"]:
         return "MODERATE"
-
     return "LOW"
 
 # =========================
-# COMPARE ENGINE
+# COMPARE
 # =========================
 def compare(qc, agent):
 
@@ -184,13 +194,13 @@ def compare(qc, agent):
 # =========================
 # UI
 # =========================
-qc_file = st.file_uploader("Upload QC File (PDF / DOCX)", type=["pdf", "docx"])
-agent_file = st.file_uploader("Upload Agent File (PDF / DOCX)", type=["pdf", "docx"])
+qc_file = st.file_uploader("Upload QC PDF", type=["pdf"])
+agent_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
 
 if qc_file and agent_file:
 
-    qc_text = extract_text(qc_file)
-    agent_text = extract_text(agent_file)
+    qc_text = read_pdf(qc_file)
+    agent_text = read_pdf(agent_file)
 
     st.subheader("Raw QC Text")
     st.text_area("", qc_text, height=200)
@@ -207,7 +217,7 @@ if qc_file and agent_file:
     st.subheader("Agent Extracted Data")
     st.json(agent_data)
 
-    if st.button("Run QC Validation"):
+    if st.button("Run QC Check"):
 
         results = compare(qc_data, agent_data)
 
