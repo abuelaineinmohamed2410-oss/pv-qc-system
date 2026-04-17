@@ -1,42 +1,18 @@
 import streamlit as st
 import pdfplumber
 import re
+from collections import defaultdict
 
 # =========================
-# PAGE CONFIG (PRO UI)
+# PAGE CONFIG
 # =========================
 st.set_page_config(
     page_title="PV QC System",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    layout="wide"
 )
 
-# =========================
-# HEADER (PROFESSIONAL STYLE)
-# =========================
-st.markdown("""
-<style>
-.main-title {
-    font-size: 32px;
-    font-weight: 600;
-    margin-bottom: 5px;
-}
-.sub-title {
-    font-size: 16px;
-    color: #666;
-    margin-bottom: 20px;
-}
-.card {
-    background-color: #f8f9fa;
-    padding: 15px;
-    border-radius: 10px;
-    border: 1px solid #e0e0e0;
-}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("<div class='main-title'>Pharmacovigilance QC System</div>", unsafe_allow_html=True)
-st.markdown("<div class='sub-title'>QC vs Agent — discrepancy detection engine</div>", unsafe_allow_html=True)
+st.title("Pharmacovigilance QC System")
+st.caption("Structured QC vs Agent discrepancy detection engine")
 
 # =========================
 # PDF READER
@@ -44,8 +20,8 @@ st.markdown("<div class='sub-title'>QC vs Agent — discrepancy detection engine
 def read_pdf(file):
     text = ""
     with pdfplumber.open(file) as pdf:
-        for p in pdf.pages:
-            t = p.extract_text()
+        for page in pdf.pages:
+            t = page.extract_text()
             if t:
                 text += t + "\n"
     return text
@@ -54,101 +30,135 @@ def read_pdf(file):
 # CLEAN TEXT
 # =========================
 def clean(text):
+    text = text.lower()
     text = text.replace("", "\n").replace("•", "\n")
     text = text.replace("\xa0", " ")
+    text = re.sub(r"\s+", " ", text)
     return text
 
 # =========================
 # NOISE FILTER
 # =========================
-def noise(x):
-    x = x.lower()
-    return "click or tap" in x or "choose an item" in x or "enter text" in x
+def is_noise(x):
+    bad = [
+        "click or tap",
+        "choose an item",
+        "enter text",
+        "additional information",
+        "product information"
+    ]
+    return any(b in x for b in bad)
 
 # =========================
-# LABELS
+# FIELD MAP (PHARMA-GRADE)
 # =========================
-LABELS = {
-    "drug": ["product name"],
-    "dose": ["dose"],
-    "indication": ["indication"],
-    "mrd": ["date reported"],
-    "patient_id": ["patient id"],
+FIELDS = {
+    "drug": ["product name", "entresto", "drug"],
+    "dose": ["dose", "mg"],
+    "frequency": ["frequency", "daily", "twice", "once"],
+    "indication": ["indication", "hf"],
+    "mrd": ["date reported", "mrd"],
     "dob": ["date of birth"],
     "age": ["age"],
     "gender": ["gender"],
-    "country": ["country"]
+    "patient_id": ["patient id"],
+    "country": ["country"],
 }
 
 # =========================
-# EXTRACTION ENGINE (UNCHANGED LOGIC)
+# SMART VALUE NORMALIZER
+# =========================
+def normalize(v):
+    v = v.lower().strip()
+    v = v.replace("milligram", "mg")
+    v = re.sub(r"\s+", " ", v)
+    v = v.replace("(", "").replace(")", "")
+    return v
+
+# =========================
+# FIELD EXTRACTION (ROBUST)
 # =========================
 def extract_fields(text):
 
     text = clean(text)
-    lines = [re.sub(r"\s+", " ", l.strip()) for l in text.split("\n") if l.strip()]
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    fields = {k: "" for k in LABELS.keys()}
+    data = defaultdict(list)
 
     for i, line in enumerate(lines):
 
-        low = line.lower()
+        if is_noise(line):
+            continue
 
-        for field, keys in LABELS.items():
+        for field, keys in FIELDS.items():
 
-            if any(k in low for k in keys):
+            if any(k in line for k in keys):
 
+                value = None
+
+                # Case 1: inline value after :
                 if ":" in line:
-                    val = line.split(":", 1)[1].strip()
-                    if val and not noise(val):
-                        fields[field] = val
-                        continue
+                    value = line.split(":", 1)[1].strip()
 
-                for j in range(i + 1, min(i + 6, len(lines))):
-                    v = lines[j].strip()
+                # Case 2: next meaningful line
+                else:
+                    for j in range(i+1, min(i+5, len(lines))):
+                        if not is_noise(lines[j]):
+                            value = lines[j]
+                            break
 
-                    if noise(v):
-                        continue
+                if value:
+                    value = normalize(value)
 
-                    if any(k in v.lower() for ks in LABELS.values() for k in ks):
-                        break
+                    # avoid garbage duplicates
+                    if value and value not in data[field]:
+                        data[field].append(value)
 
-                    fields[field] = v
-                    break
-
-    return {k: v.lower().strip() for k, v in fields.items() if v}
+    return dict(data)
 
 # =========================
-# COMPARE ENGINE
+# SMART COMPARISON ENGINE
 # =========================
 def compare(qc, agent):
 
-    all_keys = set(qc.keys()).union(set(agent.keys()))
-    results = []
+    report = defaultdict(list)
+    all_keys = set(qc.keys()).union(agent.keys())
 
-    for k in all_keys:
+    for key in all_keys:
 
-        q = qc.get(k, "MISSING")
-        a = agent.get(k, "MISSING")
+        qc_vals = qc.get(key, [])
+        ag_vals = agent.get(key, [])
 
-        if q != a:
-            results.append((k.upper(), q, a))
+        qc_vals = qc_vals if isinstance(qc_vals, list) else [qc_vals]
+        ag_vals = ag_vals if isinstance(ag_vals, list) else [ag_vals]
 
-    return results
+        qc_set = set(qc_vals)
+        ag_set = set(ag_vals)
+
+        missing_in_agent = qc_set - ag_set
+        missing_in_qc = ag_set - qc_set
+
+        if missing_in_agent or missing_in_qc:
+
+            report[key.upper()].append({
+                "qc": list(qc_set),
+                "agent": list(ag_set),
+                "missing_in_agent": list(missing_in_agent),
+                "missing_in_qc": list(missing_in_qc)
+            })
+
+    return report
 
 # =========================
-# UI INPUT SECTION
+# UI
 # =========================
 col1, col2 = st.columns(2)
 
-with col1:
-    qc_file = st.file_uploader("Upload QC PDF", type=["pdf"])
-
-with col2:
-    agent_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
+qc_file = col1.file_uploader("Upload QC PDF", type=["pdf"])
+agent_file = col2.file_uploader("Upload Agent PDF", type=["pdf"])
 
 # =========================
-# PROCESS
+# RUN
 # =========================
 if qc_file and agent_file:
 
@@ -162,30 +172,30 @@ if qc_file and agent_file:
 
         results = compare(qc_data, agent_data)
 
-        st.markdown("### QC Validation Report")
+        st.subheader("STRUCTURED MISMATCH REPORT")
 
         if not results:
-
             st.success("No discrepancies detected")
-
         else:
 
-            st.markdown("""
-            <div class='card'>
-            <h4>Detected Discrepancies</h4>
-            </div>
-            """, unsafe_allow_html=True)
+            for field, items in results.items():
 
-            st.write("")
+                for r in items:
 
-            for field, qc_val, ag_val in results:
+                    st.markdown(f"""
+## {field}
 
-                st.markdown(f"""
-### {field}
+**QC Values**
+{r['qc']}
 
-| QC Value | Agent Value |
-|----------|-------------|
-| {qc_val} | {ag_val} |
+**Agent Values**
+{r['agent']}
+
+**Missing in Agent**
+{r['missing_in_agent']}
+
+**Missing in QC**
+{r['missing_in_qc']}
 
 ---
 """)
