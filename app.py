@@ -2,8 +2,8 @@ import streamlit as st
 import pdfplumber
 import re
 
-st.set_page_config(page_title="PV QC System", layout="wide")
-st.title("Pharmacovigilance QC System")
+st.set_page_config(page_title="PV QC Smart System", layout="wide")
+st.title("Pharmacovigilance QC System (Smart Matching Engine)")
 
 # =========================
 # READ PDF
@@ -18,80 +18,91 @@ def read_pdf(file):
     return text.lower()
 
 # =========================
-# NORMALIZE
+# NORMALIZATION
 # =========================
 def norm(x):
+    if not x:
+        return ""
     x = x.lower()
     x = x.replace("mg", " mg")
     x = re.sub(r"\s+", " ", x)
     return x.strip()
 
 # =========================
-# SPLIT PRODUCT BLOCKS (CRITICAL FIX)
+# SMART FIELD EXTRACTOR (ROBUST)
 # =========================
-def split_products(text):
+def extract(text):
 
-    # real separation of repeated sections
-    blocks = re.split(r"the products|product information", text)
-
-    return [b for b in blocks if len(b.strip()) > 50]
-
-# =========================
-# EXTRACT ONE PRODUCT FROM BLOCK
-# =========================
-def extract_product(block):
-
-    # drug
-    drug_match = re.search(r"entresto\s*\d+\s*mg", block)
-    drug = norm(drug_match.group()) if drug_match else ""
-
-    # dose (ONLY from same block)
-    doses = re.findall(r"\d+\s*mg", block)
-    doses = list(set([norm(d) for d in doses]))
-
-    # frequency (optional but useful)
-    freq = ""
-    if "once daily" in block:
-        freq = "once daily"
-    elif "twice daily" in block:
-        freq = "twice daily"
-    elif "once a day" in block:
-        freq = "once daily"
-    elif "other" in block:
-        freq = "other"
-
-    return {
-        "drug": drug,
-        "dose": sorted(doses),
-        "frequency": freq
+    data = {
+        "drug": [],
+        "dose": [],
+        "frequency": [],
+        "indication": [],
+        "mrd": "",
+        "dob": "",
+        "patient_id": "",
+        "gender": "",
+        "age": "",
+        "country": "",
+        "ae": []
     }
 
-# =========================
-# FULL PRODUCT PARSER
-# =========================
-def extract_products(text):
+    text = norm(text)
 
-    blocks = split_products(text)
+    # -------- DRUG --------
+    drugs = re.findall(r"entresto\s*\d+\s*mg", text)
+    data["drug"] = list(set([norm(d) for d in drugs]))
 
-    products = []
+    # -------- DOSE --------
+    doses = re.findall(r"\d+\s*mg", text)
+    data["dose"] = list(set([norm(d) for d in doses]))
 
-    for b in blocks:
+    # -------- FREQUENCY --------
+    if "once daily" in text or "once a day" in text:
+        data["frequency"].append("once daily")
+    if "twice daily" in text or "twice a day" in text:
+        data["frequency"].append("twice daily")
+    if "other" in text:
+        data["frequency"].append("other")
 
-        p = extract_product(b)
+    data["frequency"] = list(set(data["frequency"]))
 
-        if p["drug"]:
-            products.append(p)
+    # -------- INDICATION --------
+    if "hf" in text or "heart failure" in text:
+        data["indication"].append("hf")
 
-    return products
+    # -------- MRD --------
+    mrd = re.search(r"\d{1,2}-[a-z]{3}-\d{2,4}", text)
+    if mrd:
+        data["mrd"] = mrd.group()
 
-# =========================
-# AE EXTRACTION (IMPROVED)
-# =========================
-def extract_aes(text):
+    # -------- DOB --------
+    dob = re.search(r"\d{1,2}-[a-z]{3}-\d{2,4}", text)
+    if dob:
+        data["dob"] = dob.group()
 
-    aes = []
+    # -------- PATIENT ID --------
+    pid = re.search(r"\d{4}-\d{4}-\d{4}-\d{6}", text)
+    if pid:
+        data["patient_id"] = pid.group()
 
-    keywords = [
+    # -------- GENDER --------
+    if "male" in text:
+        data["gender"] = "male"
+    elif "female" in text:
+        data["gender"] = "female"
+
+    # -------- AGE --------
+    age = re.search(r"\d+\s*years", text)
+    if age:
+        data["age"] = age.group()
+
+    # -------- COUNTRY --------
+    if "egypt" in text:
+        data["country"] = "egypt"
+
+    # -------- AE --------
+    ae_keywords = [
         "non compliance",
         "stopping",
         "off-label",
@@ -99,76 +110,64 @@ def extract_aes(text):
         "adverse event"
     ]
 
-    for k in keywords:
-        if k in text:
-            aes.append(k)
+    data["ae"] = [k for k in ae_keywords if k in text]
 
-    return sorted(set(aes))
+    return data
 
 # =========================
-# EXTRACT CASE
+# SMART COMPARATOR (CORE FIX)
 # =========================
-def extract_case(text):
+def smart_compare(qc, agent):
 
-    return {
-        "products": extract_products(text),
-        "aes": extract_aes(text)
-    }
+    results = []
 
-# =========================
-# COMPARE PRODUCTS (FIXED)
-# =========================
-def compare_products(qc, ag):
+    def diff(field, a, b):
 
-    qc_set = {(p["drug"], tuple(p["dose"]), p["frequency"]) for p in qc}
-    ag_set = {(p["drug"], tuple(p["dose"]), p["frequency"]) for p in ag}
+        a_set = set(a) if isinstance(a, list) else {a}
+        b_set = set(b) if isinstance(b, list) else {b}
 
-    if qc_set != ag_set:
-        return [{
-            "field": "PRODUCTS",
-            "qc": qc_set,
-            "agent": ag_set
-        }]
+        return a_set != b_set
 
-    return []
+    mapping = [
+        "drug", "dose", "frequency", "indication",
+        "mrd", "dob", "patient_id", "gender", "age", "country"
+    ]
 
-# =========================
-# COMPARE AES
-# =========================
-def compare_aes(qc, ag):
+    for f in mapping:
+        if diff(f, qc.get(f, []), agent.get(f, [])):
+            results.append({
+                "field": f.upper(),
+                "qc": qc.get(f),
+                "agent": agent.get(f)
+            })
 
-    if set(qc) != set(ag):
-        return [{
+    # AE separately
+    if set(qc.get("ae", [])) != set(agent.get("ae", [])):
+        results.append({
             "field": "ADVERSE EVENTS",
-            "qc": qc,
-            "agent": ag
-        }]
-    return []
+            "qc": qc.get("ae"),
+            "agent": agent.get("ae")
+        })
 
-# =========================
-# COMPARE FULL
-# =========================
-def compare(qc, ag):
-
-    return compare_products(qc["products"], ag["products"]) + compare_aes(qc["aes"], ag["aes"])
+    return results
 
 # =========================
 # UI
 # =========================
 qc_file = st.file_uploader("Upload QC PDF", type=["pdf"])
-ag_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
+agent_file = st.file_uploader("Upload Agent PDF", type=["pdf"])
 
-if qc_file and ag_file:
+if qc_file and agent_file:
 
     qc_text = read_pdf(qc_file)
-    ag_text = read_pdf(ag_file)
+    agent_text = read_pdf(agent_file)
 
-    qc = extract_case(qc_text)
-    ag = extract_case(ag_text)
+    qc = extract(qc_text)
+    agent = extract(agent_text)
 
-    if st.button("Run QC Check"):
+    if st.button("Run QC Validation"):
 
-        results = compare(qc, ag)
+        results = smart_compare(qc, agent)
 
         st.subheader("Mismatch Report")
 
