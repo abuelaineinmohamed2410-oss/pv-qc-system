@@ -3,14 +3,17 @@ import pdfplumber
 from docx import Document
 import re
 
+# =========================
+# PAGE CONFIG
+# =========================
 st.set_page_config(page_title="PV QC System", layout="wide")
 
-st.title("Pharmacovigilance  Control System")
-st.markdown("QC vs Agent comparison (pharma-grade mismatch detection)")
+st.title("Pharmacovigilance Control System")
+st.markdown("QC vs Agent comparison (pharma-grade structured mismatch detection)")
 
-# -------------------------
+# =========================
 # FILE READERS
-# -------------------------
+# =========================
 def read_pdf(file):
     text = ""
     with pdfplumber.open(file) as pdf:
@@ -29,44 +32,77 @@ def extract_text(file):
         return read_pdf(file)
     return read_docx(file)
 
+# =========================
+# CLEAN TEXT (IMPORTANT FIX)
+# =========================
+def clean_text(text):
+    text = text.replace("\xa0", " ")
+    text = text.replace("", "\n")
+    text = text.replace("•", "\n")
+    return text
 
-# -------------------------
-# NORMALIZE
-# -------------------------
-def norm(x):
-    return re.sub(r"\s+", " ", x.lower()).strip() if x else ""
-
-
-# -------------------------
-# FIELD EXTRACTION
-# -------------------------
+# =========================
+# FIELD EXTRACTION (ROBUST)
+# =========================
 def extract_fields(text):
 
-    patterns = {
-        "drug": r"Product Name.*?:\s*(.*)",
-        "dose": r"Dose:\s*(.*)",
-        "indication": r"Indication:\s*(.*)",
-        "mrd": r"Date Reported \(MRD\):\s*(.*)",
-        "patient_id": r"Patient ID.*?:\s*(.*)",
-        "dob": r"Date of Birth:\s*(.*)",
-        "age": r"Age.*?:\s*(.*)",
-        "gender": r"Gender:\s*(.*)",
-        "country": r"Country Name\s*:\s*(.*)"
+    text = clean_text(text)
+
+    fields = {
+        "drug": "",
+        "dose": "",
+        "indication": "",
+        "mrd": "",
+        "patient_id": "",
+        "dob": "",
+        "age": "",
+        "gender": "",
+        "country": ""
     }
 
-    data = {}
+    lines = text.split("\n")
 
-    for k, p in patterns.items():
-        m = re.search(p, text, re.IGNORECASE)
-        if m:
-            data[k] = norm(m.group(1))
+    def get_value(line):
+        if ":" in line:
+            return line.split(":", 1)[1].strip()
+        return ""
 
-    return data
+    for line in lines:
+        l = line.lower()
 
+        if "product name" in l:
+            fields["drug"] = get_value(line)
 
-# -------------------------
-# SEVERITY
-# -------------------------
+        elif "dose" in l:
+            fields["dose"] = get_value(line)
+
+        elif "indication" in l:
+            fields["indication"] = get_value(line)
+
+        elif "date reported" in l or "mrd" in l:
+            fields["mrd"] = get_value(line)
+
+        elif "patient id" in l:
+            fields["patient_id"] = get_value(line)
+
+        elif "date of birth" in l:
+            fields["dob"] = get_value(line)
+
+        elif "age" in l:
+            fields["age"] = get_value(line)
+
+        elif "gender" in l:
+            fields["gender"] = get_value(line)
+
+        elif "country" in l:
+            fields["country"] = get_value(line)
+
+    # normalize
+    return {k: v.lower().strip() for k, v in fields.items() if v}
+
+# =========================
+# SEVERITY ENGINE
+# =========================
 def severity(field):
 
     if field in ["mrd", "dob", "patient_id"]:
@@ -77,15 +113,14 @@ def severity(field):
 
     return "LOW"
 
-
-# -------------------------
-# COMPARE ENGINE
-# -------------------------
+# =========================
+# COMPARISON ENGINE
+# =========================
 def compare(qc, agent):
 
     results = []
 
-    keys = set(qc.keys()).union(agent.keys())
+    keys = set(qc.keys()).union(set(agent.keys()))
 
     for k in keys:
 
@@ -103,10 +138,9 @@ def compare(qc, agent):
 
     return results
 
-
-# -------------------------
+# =========================
 # UI
-# -------------------------
+# =========================
 qc_file = st.file_uploader("Upload QC File", type=["pdf", "docx"])
 agent_file = st.file_uploader("Upload Agent File", type=["pdf", "docx"])
 
@@ -118,7 +152,7 @@ if qc_file and agent_file:
     qc_data = extract_fields(qc_text)
     agent_data = extract_fields(agent_text)
 
-    if st.button("Run QC Check"):
+    if st.button("Run QC Validation"):
 
         results = compare(qc_data, agent_data)
 
@@ -128,12 +162,13 @@ if qc_file and agent_file:
             st.success("No discrepancies detected")
         else:
             for r in results:
-                st.markdown(f"""
-**{r['field']}**
 
-QC: {r['qc']}  
-Agent: {r['agent']}  
-Severity: {r['severity']}
+                st.markdown(f"""
+### {r['field']}
+
+QC Value: **{r['qc']}**  
+Agent Value: **{r['agent']}**  
+Severity: **{r['severity']}**
 
 ---
 """)
