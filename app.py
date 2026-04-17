@@ -1,6 +1,7 @@
 import streamlit as st
 import pdfplumber
-from docx import Document
+import xml.etree.ElementTree as ET
+import zipfile
 
 # =========================
 # CONFIG
@@ -8,7 +9,7 @@ from docx import Document
 st.set_page_config(page_title="PV QC System", layout="wide")
 
 st.title("Pharmacovigilance Control System")
-st.markdown("QC vs Agent comparison (Word + PDF structured PV validation)")
+st.markdown("QC vs Agent comparison (robust DOCX + PDF extraction)")
 
 # =========================
 # CLEAN TEXT
@@ -32,29 +33,25 @@ def read_pdf(file):
     return text
 
 # =========================
-# DOCX READER (FIXED)
+# DOCX READER (XML METHOD - FIXED)
 # =========================
 def read_docx(file):
-    doc = Document(file)
+    text = []
 
-    lines = []
+    try:
+        with zipfile.ZipFile(file) as z:
+            xml_content = z.read("word/document.xml")
 
-    # paragraphs
-    for p in doc.paragraphs:
-        if p.text.strip():
-            lines.append(p.text)
+        tree = ET.fromstring(xml_content)
 
-    # tables (IMPORTANT)
-    for table in doc.tables:
-        for row in table.rows:
-            row_text = []
-            for cell in row.cells:
-                if cell.text.strip():
-                    row_text.append(cell.text.strip())
-            if row_text:
-                lines.append(" | ".join(row_text))
+        for elem in tree.iter():
+            if elem.tag.endswith("t") and elem.text:
+                text.append(elem.text)
 
-    return "\n".join(lines)
+    except Exception:
+        return ""
+
+    return "\n".join(text)
 
 # =========================
 # FILE HANDLER
@@ -70,7 +67,6 @@ def extract_text(file):
 def extract_fields(text):
 
     text = clean_text(text)
-
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     fields = {
@@ -85,7 +81,7 @@ def extract_fields(text):
         "country": ""
     }
 
-    def value(line):
+    def get_value(line):
         if ":" in line:
             return line.split(":", 1)[1].strip()
         return ""
@@ -95,37 +91,36 @@ def extract_fields(text):
         l = line.lower()
 
         if "product name" in l:
-            fields["drug"] = value(line)
+            fields["drug"] = get_value(line)
 
         elif "dose" in l:
-            fields["dose"] = value(line)
+            fields["dose"] = get_value(line)
 
         elif "indication" in l:
-            fields["indication"] = value(line)
+            fields["indication"] = get_value(line)
 
         elif "date reported" in l or "mrd" in l:
-            fields["mrd"] = value(line)
+            fields["mrd"] = get_value(line)
 
         elif "patient id" in l:
-            fields["patient_id"] = value(line)
+            fields["patient_id"] = get_value(line)
 
         elif "date of birth" in l:
-            fields["dob"] = value(line)
+            fields["dob"] = get_value(line)
 
         elif "age" in l:
-            fields["age"] = value(line)
+            fields["age"] = get_value(line)
 
         elif "gender" in l:
-            fields["gender"] = value(line)
+            fields["gender"] = get_value(line)
 
         elif "country" in l:
-            fields["country"] = value(line)
+            fields["country"] = get_value(line)
 
-    # normalize
     return {k: v.lower().strip() for k, v in fields.items() if v}
 
 # =========================
-# SEVERITY ENGINE
+# SEVERITY RULES
 # =========================
 def severity(field):
 
@@ -165,8 +160,8 @@ def compare(qc, agent):
 # =========================
 # UI
 # =========================
-qc_file = st.file_uploader("Upload QC File (PDF or DOCX)", type=["pdf", "docx"])
-agent_file = st.file_uploader("Upload Agent File (PDF or DOCX)", type=["pdf", "docx"])
+qc_file = st.file_uploader("Upload QC File (PDF / DOCX)", type=["pdf", "docx"])
+agent_file = st.file_uploader("Upload Agent File (PDF / DOCX)", type=["pdf", "docx"])
 
 if qc_file and agent_file:
 
@@ -189,9 +184,10 @@ if qc_file and agent_file:
         st.subheader("Mismatch Report")
 
         if not results:
-            st.success("No discrepancies detected")
+            st.error("No discrepancies detected")
         else:
             for r in results:
+
                 st.markdown(f"""
 ### {r['field']}
 
