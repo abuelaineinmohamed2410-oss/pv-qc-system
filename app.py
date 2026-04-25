@@ -1,7 +1,44 @@
+```python
 import streamlit as st
 import pdfplumber
 import re
 import time
+
+# =========================
+# PAGE STYLE (PROFESSIONAL UI)
+# =========================
+st.markdown("""
+    <style>
+        body {
+            background-color: #f5f7fa;
+        }
+
+        .stButton button {
+            background-color: #0b5ed7;
+            color: white;
+            border-radius: 6px;
+            height: 40px;
+            width: 100%;
+            font-weight: 500;
+        }
+
+        .stButton button:hover {
+            background-color: #084298;
+            color: white;
+        }
+
+        .stMetric {
+            background-color: white;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e6e6e6;
+        }
+
+        h1, h2, h3 {
+            color: #1f2d3d;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
 # =========================
 # SESSION STATE INIT
@@ -23,53 +60,53 @@ if "total_time" not in st.session_state:
 # LOGIN SYSTEM
 # =========================
 def login():
-    st.title("🔐 Login")
+    st.title("User Authentication")
+    st.caption("Enter your credentials to access the system")
 
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
     if st.button("Login"):
-        # simple static auth (you can replace with DB later)
-        if username and password == "1234":
+        if username == "admin" and password == "1234":
             st.session_state.logged_in = True
             st.session_state.username = username
-            st.success(f"Welcome {username}")
+            st.success("Login successful")
         else:
-            st.error("Invalid credentials")
-
+            st.error("Invalid username or password")
 
 if not st.session_state.logged_in:
     login()
     st.stop()
 
 # =========================
-# PAGE CONFIG
+# PAGE HEADER
 # =========================
 st.set_page_config(page_title="PV QC System", layout="wide")
-st.title("PV Mismatch Checker")
-st.caption("If Your Fearing of Misisng a Case, You should Try Me...")
 
-st.write(f"👤 Logged in as: **{st.session_state.username}**")
+st.title("Pharmacovigilance QC System")
+st.caption("Case Quality Check and Discrepancy Detection Tool")
+
+st.markdown(f"**User:** {st.session_state.username}")
 
 # =========================
-# TIMER BUTTONS
+# TIMER CONTROLS
 # =========================
 col1, col2 = st.columns(2)
 
 with col1:
-    if st.button("▶ Start Case"):
+    if st.button("Start Case"):
         st.session_state.start_time = time.time()
-        st.success("Timer started")
+        st.success("Case tracking started")
 
 with col2:
-    if st.button("⏹ Finish Case"):
+    if st.button("Finish Case"):
         if st.session_state.start_time:
             duration = time.time() - st.session_state.start_time
             st.session_state.total_time += duration
             st.session_state.start_time = None
-            st.info(f"Case completed in {round(duration,2)} sec")
+            st.info(f"Case completed in {round(duration,2)} seconds")
         else:
-            st.warning("Start timer first")
+            st.warning("Start tracking before finishing")
 
 # =========================
 # PDF READER
@@ -220,7 +257,7 @@ if qc_file and agent_file:
 
         diffs = compare(qc_data, agent_data)
 
-        st.subheader("Now let's see what you have missed")
+        st.subheader("Detected Discrepancies")
 
         if not diffs:
             st.success("No discrepancies detected")
@@ -239,7 +276,7 @@ if qc_file and agent_file:
 # METRICS DASHBOARD
 # =========================
 st.divider()
-st.subheader("📊 Agent Performance")
+st.subheader("Performance Metrics")
 
 col1, col2, col3 = st.columns(3)
 
@@ -255,11 +292,12 @@ with col2:
     st.metric("Cases with Errors", errors)
 
 with col3:
-    st.metric("Accuracy %", f"{round(accuracy,2)}%")
+    st.metric("Accuracy (%)", f"{round(accuracy,2)}")
 
 # =========================
 # TIME METRIC
 # =========================
 if total > 0:
     avg_time = st.session_state.total_time / total
-    st.info(f"⏱ Avg Handling Time: {round(avg_time,2)} sec")
+    st.info(f"Average Handling Time: {round(avg_time,2)} seconds")
+```
