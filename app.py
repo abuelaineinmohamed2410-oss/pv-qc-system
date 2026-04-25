@@ -4,48 +4,48 @@ import re
 import time
 
 # =========================
-# PAGE CONFIG (MUST BE FIRST)
+# PAGE CONFIG
 # =========================
 st.set_page_config(page_title="PV QC System", layout="wide")
 
 # =========================
-# PAGE STYLE (PROFESSIONAL UI)
+# STYLE
 # =========================
 st.markdown("""
-    <style>
-        body {
-            background-color: #f5f7fa;
-        }
+<style>
+body {
+    background-color: #f5f7fa;
+}
 
-        .stButton button {
-            background-color: #0b5ed7;
-            color: white;
-            border-radius: 6px;
-            height: 40px;
-            width: 100%;
-            font-weight: 500;
-        }
+.stButton button {
+    background-color: #0b5ed7;
+    color: white;
+    border-radius: 6px;
+    height: 40px;
+    width: 100%;
+    font-weight: 500;
+}
 
-        .stButton button:hover {
-            background-color: #084298;
-            color: white;
-        }
+.stButton button:hover {
+    background-color: #084298;
+    color: white;
+}
 
-        .stMetric {
-            background-color: white;
-            padding: 15px;
-            border-radius: 8px;
-            border: 1px solid #e6e6e6;
-        }
+.stMetric {
+    background-color: white;
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid #e6e6e6;
+}
 
-        h1, h2, h3 {
-            color: #1f2d3d;
-        }
-    </style>
+h1, h2, h3 {
+    color: #1f2d3d;
+}
+</style>
 """, unsafe_allow_html=True)
 
 # =========================
-# SESSION STATE INIT
+# SESSION STATE
 # =========================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -61,11 +61,11 @@ if "total_time" not in st.session_state:
     st.session_state.total_time = 0
 
 # =========================
-# LOGIN SYSTEM
+# LOGIN
 # =========================
 def login():
     st.title("User Authentication")
-    st.caption("Enter your credentials to access the system")
+    st.caption("Enter your credentials")
 
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
@@ -83,15 +83,14 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =========================
-# PAGE HEADER
+# HEADER
 # =========================
 st.title("Pharmacovigilance QC System")
 st.caption("Case Quality Check and Discrepancy Detection Tool")
-
 st.markdown(f"**User:** {st.session_state.username}")
 
 # =========================
-# TIMER CONTROLS
+# TIMER
 # =========================
 col1, col2 = st.columns(2)
 
@@ -108,10 +107,10 @@ with col2:
             st.session_state.start_time = None
             st.info(f"Case completed in {round(duration,2)} seconds")
         else:
-            st.warning("Start tracking before finishing")
+            st.warning("Start tracking first")
 
 # =========================
-# PDF READER
+# FUNCTIONS
 # =========================
 def read_pdf(file):
     text = ""
@@ -122,9 +121,6 @@ def read_pdf(file):
                 text += t + "\n"
     return text
 
-# =========================
-# CLEAN TEXT
-# =========================
 def clean(text):
     text = text.lower()
     text = text.replace("", " ")
@@ -133,9 +129,6 @@ def clean(text):
     text = re.sub(r"\s+", " ", text)
     return text
 
-# =========================
-# NOISE FILTER
-# =========================
 def is_noise(v):
     return any(x in v for x in [
         "click or tap",
@@ -146,29 +139,19 @@ def is_noise(v):
         "unknown / not reported"
     ])
 
-# =========================
-# SAFE FIELD EXTRACTION
-# =========================
 def extract_field(text, patterns):
     for p in patterns:
         m = re.search(p, text, re.IGNORECASE)
         if m:
             val = m.group(1).strip()
-
             if is_noise(val):
                 continue
-
             if len(val) > 120:
                 continue
-
             return val
     return ""
 
-# =========================
-# EXTRACTION ENGINE
-# =========================
 def extract(text):
-
     text = clean(text)
     data = {}
 
@@ -213,15 +196,9 @@ def extract(text):
 
     return data
 
-# =========================
-# NORMALIZE
-# =========================
 def norm(x):
     return re.sub(r"\s+", " ", x.strip().lower())
 
-# =========================
-# COMPARE ENGINE
-# =========================
 def compare(qc, agent):
     diffs = []
     keys = set(qc.keys()).union(agent.keys())
@@ -275,7 +252,7 @@ if qc_file and agent_file:
 """)
 
 # =========================
-# METRICS DASHBOARD
+# METRICS
 # =========================
 st.divider()
 st.subheader("Performance Metrics")
@@ -284,7 +261,6 @@ col1, col2, col3 = st.columns(3)
 
 total = st.session_state.cases_uploaded
 errors = st.session_state.cases_with_errors
-
 accuracy = ((total - errors) / total * 100) if total > 0 else 0
 
 with col1:
@@ -294,12 +270,8 @@ with col2:
     st.metric("Cases with Errors", errors)
 
 with col3:
-    st.metric("Accuracy (%)", f"{round(accuracy,2)}")
+    st.metric("Accuracy (%)", round(accuracy, 2))
 
-# =========================
-# TIME METRIC
-# =========================
 if total > 0:
     avg_time = st.session_state.total_time / total
     st.info(f"Average Handling Time: {round(avg_time,2)} seconds")
-```
