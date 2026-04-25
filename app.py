@@ -5,6 +5,11 @@ import re
 import time
 
 # =========================
+# PAGE CONFIG (MUST BE FIRST)
+# =========================
+st.set_page_config(page_title="PV QC System", layout="wide")
+
+# =========================
 # PAGE STYLE (PROFESSIONAL UI)
 # =========================
 st.markdown("""
@@ -81,8 +86,6 @@ if not st.session_state.logged_in:
 # =========================
 # PAGE HEADER
 # =========================
-st.set_page_config(page_title="PV QC System", layout="wide")
-
 st.title("Pharmacovigilance QC System")
 st.caption("Case Quality Check and Discrepancy Detection Tool")
 
