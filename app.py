@@ -151,12 +151,34 @@ def extract_field(text, patterns):
             return val
     return ""
 
+# =========================
+# NEW: Extract all products
+# =========================
+def extract_products(text):
+    products = []
+    matches = re.findall(r"([a-zA-Z]+)\s*(\d+\s*mg)", text)
+
+    for m in matches:
+        name = m[0].strip().lower()
+        dose = m[1].strip().lower()
+
+        if not is_noise(name):
+            products.append({
+                "name": name,
+                "dose": dose
+            })
+
+    return products
+
+# =========================
+# EXTRACTION
+# =========================
 def extract(text):
     text = clean(text)
     data = {}
 
-    drug = re.search(r"entresto\s*\d+\s*mg", text)
-    data["drug"] = drug.group(0) if drug else ""
+    # NEW: multiple products
+    data["products"] = extract_products(text)
 
     data["dose"] = extract_field(text, [
         r"dose[:\s]*([0-9]+\s*mg)",
@@ -199,11 +221,57 @@ def extract(text):
 def norm(x):
     return re.sub(r"\s+", " ", x.strip().lower())
 
+# =========================
+# NEW: PRODUCT COMPARISON
+# =========================
+def compare_products(qc_products, agent_products):
+    diffs = []
+
+    qc_dict = {p["name"]: p["dose"] for p in qc_products}
+    agent_dict = {p["name"]: p["dose"] for p in agent_products}
+
+    all_products = set(qc_dict.keys()).union(agent_dict.keys())
+
+    for product in all_products:
+        qc_dose = qc_dict.get(product, "")
+        agent_dose = agent_dict.get(product, "")
+
+        if product not in qc_dict:
+            diffs.append({
+                "field": f"PRODUCT ADDED: {product.upper()}",
+                "qc": "NOT PRESENT",
+                "agent": agent_dose
+            })
+
+        elif product not in agent_dict:
+            diffs.append({
+                "field": f"PRODUCT MISSING: {product.upper()}",
+                "qc": qc_dose,
+                "agent": "NOT PRESENT"
+            })
+
+        elif qc_dose != agent_dose:
+            diffs.append({
+                "field": f"DOSE MISMATCH: {product.upper()}",
+                "qc": qc_dose,
+                "agent": agent_dose
+            })
+
+    return diffs
+
+# =========================
+# GENERAL COMPARISON
+# =========================
 def compare(qc, agent):
     diffs = []
+
+    # Compare normal fields
     keys = set(qc.keys()).union(agent.keys())
 
     for k in keys:
+        if k == "products":
+            continue
+
         q = norm(qc.get(k, ""))
         a = norm(agent.get(k, ""))
 
@@ -213,6 +281,10 @@ def compare(qc, agent):
                 "qc": q,
                 "agent": a
             })
+
+    # Compare products separately
+    product_diffs = compare_products(qc.get("products", []), agent.get("products", []))
+    diffs.extend(product_diffs)
 
     return diffs
 
